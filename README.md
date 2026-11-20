@@ -96,19 +96,10 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Construcción de la *Zero-Page* (`boot_params`) y mapa de memoria física E820.
   - Creación de tablas de páginas de 4 niveles (PML4) con *identity mapping* de 1 GB en páginas de 2MB.
   - Carga de línea de comandos del kernel e initramfs.
-  - Comando CLI de validación: `capsule.exe test-boot`.
-* [x] **Hito M4 — Consola Serial UART 16550 y Linux Shell**:
-  - Emulación completa de UART 16550 PC estándar (puerto COM1 en `0x3F8` a `0x3FF`).
-  - Registros de línea (`LCR`), divisor de baudios (`DLL`/`DLM` vía `DLAB`), transmisor (`THR`), receptor (`RBR`) y estado (`LSR` con `THRE` y `DR`).
-  - Recepción de logs `earlyprintk` y soporte para consola ttyS0.
-  - Comando CLI de validación: `capsule.exe test-serial`.
-* [ ] **Hito M5 — Disco Virtual y Almacenamiento (RAW / VHD)** *(En progreso)*:
-  - Crate `capsule-storage` con abstracción `BlockDevice` y dispositivos en memoria.
-  - Soporte de imágenes RAW (crear/abrir, lectura/escritura por sectores, flush).
-  - Soporte de VHD *fixed* (footer `conectix`, checksum, geometría CHS, reopen y E/S).
-  - Extensión de la CPU con instrucciones `IN` por puerto (`0xE4/0xE5/0xEC/0xED`) para futuros controladores PIO.
-  - Comando CLI de validación: `capsule.exe test-storage`.
-  - Pendiente: controlador ATA/IDE (o virtio-blk), integración con `VirtualMachine` y arranque desde disco.
+  - Controlador ATA/IDE PIO primario (canal maestro, LBA28): IDENTIFY, READ/WRITE SECTORS y FLUSH CACHE.
+  - Integración con VirtualMachine (ttach_primary_master_disk) y soporte CPU/VMM para PIO 8/16/32-bit.
+  - Comandos CLI de validación: capsule.exe test-storage, capsule.exe test-disk.
+  - Pendiente: robustecer ATA (IRQ, multi-sector, errores/compatibilidad), arranque desde disco y evolución (virtio-blk, formatos dinámicos/COW).
 
 ---
 
@@ -154,6 +145,11 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 ### Verificar almacenamiento de bloques (Hito M5)
 ```powershell
 .\target\release\capsule.exe test-storage
+```
+
+### Verificar disco ATA/IDE adjunto a la VM (Hito M5)
+```powershell
+.\target\release\capsule.exe test-disk
 ```
 
 ### Ejecutar la batería de pruebas automatizadas
