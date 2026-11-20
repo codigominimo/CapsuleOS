@@ -2,12 +2,13 @@
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
 //! Comandos CLI:
-//! - `capsule.exe test-guest`   : Verificación de la vCPU y máquina virtual elemental.
-//! - `capsule.exe test-boot`    : Verificación del protocolo Linux Direct Boot (bzImage + Zero Page).
-//! - `capsule.exe test-serial`  : Verificación del puerto serie UART 16550 (COM1 / earlyprintk).
-//! - `capsule.exe test-storage` : Verificación de almacenamiento de bloques (RAW y VHD fixed).
-//! - `capsule.exe test-disk`    : Verificación de disco adjunto a la VM (ATA/IDE PIO + imagen RAW).
-//! - (Sin argumentos)          : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
+//! - `capsule.exe test-guest`     : Verificación de la vCPU y máquina virtual elemental.
+//! - `capsule.exe test-boot`      : Verificación del protocolo Linux Direct Boot (bzImage + Zero Page).
+//! - `capsule.exe test-serial`    : Verificación del puerto serie UART 16550 (COM1 / earlyprintk).
+//! - `capsule.exe test-storage`   : Verificación de almacenamiento de bloques (RAW y VHD fixed).
+//! - `capsule.exe test-disk`      : Verificación de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
+//! - `capsule.exe test-boot-disk` : Verificación de arranque desde disco (sector de arranque + IDE PIO).
+//! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
@@ -442,6 +443,89 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_test_boot_disk() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Arranque desde Disco (Hito M5)     ");
+    println!("==================================================");
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let path = std::env::temp_dir().join(format!("capsuleos_m5_bootdisk_{nanos}.img"));
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+
+    let sector1: Vec<u8> = (0..sector_size).map(|i| 0x5Au8 ^ (i as u8)).collect();
+
+    // Crear disco RAW: LBA1 = datos, LBA0 = boot sector
+    let mut disk = RawDiskImage::create(&path, 16, DEFAULT_SECTOR_SIZE)?;
+    disk.write_sectors(1, 1, &sector1)?;
+    disk.flush()?;
+
+    // Boot sector: leer LBA1 por ATA PIO a 0x1000 y detenerse (RIP inicia en 0x7C00)
+    let mut boot_sector = vec![0u8; sector_size];
+    let mut code: Vec<u8> = Vec::new();
+    // Select master, LBA
+    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+    // READ SECTORS: count=1, lba=1, cmd=0x20
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
+    // Read loop: 128 dwords 0x1F0 -> 0x1000
+    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
+    code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=dst
+    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
+    let read_loop = code.len();
+    code.extend_from_slice(&[0xED, 0x89, 0x03, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
+    let rel = (read_loop as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rel as i8 as u8]);
+    code.push(0xF4); // hlt
+    if code.len() > 510 {
+        return Err("El boot sector de prueba excede 510 bytes".into());
+    }
+    boot_sector[..code.len()].copy_from_slice(&code);
+    boot_sector[510] = 0x55;
+    boot_sector[511] = 0xAA;
+    disk.write_sectors(0, 1, &boot_sector)?;
+    disk.flush()?;
+    drop(disk);
+
+    let config = VmConfig {
+        name: "BootFromDiskTest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    };
+    let mut vm = VirtualMachine::new(config)?;
+    let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
+    vm.boot_from_primary_master_disk(Box::new(disk))?;
+
+    assert_eq!(vm.rip(), 0x7C00, "RIP debe iniciar en 0x7C00");
+    let mut loaded_boot = vec![0u8; sector_size];
+    vm.memory.read_bytes(GuestAddress::new(0x7C00), &mut loaded_boot)?;
+    assert_eq!(
+        &loaded_boot[510..512],
+        &[0x55, 0xAA],
+        "Firma de boot sector invalida en memoria guest"
+    );
+
+    let exit = vm.run()?;
+    assert_eq!(exit, VcpuExit::Halt, "El boot sector debe terminar con HLT");
+
+    let mut out = vec![0u8; sector_size];
+    vm.memory.read_bytes(GuestAddress::new(0x1000), &mut out)?;
+    assert_eq!(out, sector1, "El boot sector no leyo LBA1 correctamente");
+
+    let _ = fs::remove_file(&path);
+
+    println!("  [OK] Sector de arranque cargado en 0x7C00 (RIP inicial correcto)");
+    println!("  [OK] Boot code ejecuto lectura ATA PIO de LBA1 al buffer guest");
+    println!("--------------------------------------------------");
+    println!("  Arranque desde disco: EXITO");
+    println!("  Flujo: LBA0 -> 0x7C00, ejecutar boot sector, leer LBA1 via IDE");
+    println!("==================================================");
+
+    Ok(())
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -624,7 +708,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(251, 191, 36));
             draw_text_line(
                 hdc,
-                "En progreso - M5: ATA/IDE PIO, discos RAW/VHD y VM adjunta (test-storage/test-disk)",
+                "En progreso - M5: ATA/IDE PIO (IRQ/nIEN/SRST), RAW/VHD, boot sector (test-disk/test-boot-disk)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -787,6 +871,14 @@ fn main() {
     if args.iter().any(|arg| arg == "test-disk" || arg == "--test-disk") {
         if let Err(e) = run_test_disk() {
             eprintln!("Error en test-disk: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-boot-disk" || arg == "--test-boot-disk") {
+        if let Err(e) = run_test_boot_disk() {
+            eprintln!("Error en test-boot-disk: {}", e);
             std::process::exit(1);
         }
         return;

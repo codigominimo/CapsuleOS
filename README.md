@@ -72,7 +72,7 @@ CapsuleOS/
 
 ---
 
-## 🚦 Estado Actual de Desarrollo
+## Estado Actual de Desarrollo
 
 El desarrollo se realiza de forma estrictamente incremental por hitos comprobados y probados:
 
@@ -91,19 +91,28 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Decodificación completa de instrucciones: aritmética, lógica, ModR/M, SIB.
   - Prefijos REX para operaciones en modo de 64 bits completo y registros `R8`-`R15`.
   - Banderas `RFLAGS` (`ZF`, `CF`, `SF`, `OF`, `PF`), saltos condicionales `Jcc` y pila (`CALL`/`RET`).
-* [x] **Hito M3 — Arranque Directo del Kernel Linux (bzImage direct boot)**:
+* [x] **Hito M3 - Arranque Directo del Kernel Linux (bzImage direct boot)**:
   - Parser del encabezado `SetupHeader` con firma `HdrS`.
   - Construcción de la *Zero-Page* (`boot_params`) y mapa de memoria física E820.
   - Creación de tablas de páginas de 4 niveles (PML4) con *identity mapping* de 1 GB en páginas de 2MB.
-  - Carga de línea de comandos del kernel e initramfs.
-  - Controlador ATA/IDE PIO primario (canal maestro, LBA28): IDENTIFY, READ/WRITE SECTORS y FLUSH CACHE.
-  - Integración con VirtualMachine (ttach_primary_master_disk) y soporte CPU/VMM para PIO 8/16/32-bit.
-  - Comandos CLI de validación: capsule.exe test-storage, capsule.exe test-disk.
-  - Pendiente: robustecer ATA (IRQ, multi-sector, errores/compatibilidad), arranque desde disco y evolución (virtio-blk, formatos dinámicos/COW).
+  - Carga de línea de comandos del kernel e initramfs y ejecución guest vía protocolo de arranque directo.
+  - Comando CLI de validación: `capsule.exe test-boot`.
+* [x] **Hito M4 - Linux Console & Shell (base UART / earlyprintk)**:
+  - Emulación UART 16550 (COM1, 0x3F8) integrada como dispositivo virtual de la VM.
+  - Soporte de E/S por puerto para salida de consola guest (`console=ttyS0` / earlyprintk).
+  - Comando CLI de validación: `capsule.exe test-serial`.
+* [ ] **Hito M5 - Virtual Disk (RAW/VHD) [en progreso]**:
+  - Abstracción `BlockDevice` y backends `MemoryDisk`, `RawDiskImage`, `VhdFixedDisk` (fixed).
+  - Controlador ATA/IDE PIO primario (canal maestro, LBA28): `IDENTIFY`, `READ/WRITE SECTORS`, `FLUSH CACHE`.
+  - Modelo de IRQ simplificado (condición pendiente, `nIEN`) y software reset (`SRST`) en el controlador.
+  - Integración VM: `attach_primary_master_disk`, E/S PIO 8/16/32-bit, y flujo mínimo de arranque desde disco (`boot_from_primary_master_disk`: carga LBA0 en `0x7C00`, `RIP=0x7C00`).
+  - Validación: transferencias PIO (incl. multi-sector), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, y boot sector que lee sectores vía IDE.
+  - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk`.
+  - Pendiente: robustecer ATA (cableado de INTRQ real a PIC/APIC, semántica de errores/registros más completa), arranque de cargas más realistas desde disco/firmware, y evolución a `virtio-blk` / formatos dinámicos o COW (M6).
 
 ---
 
-## 🛠️ Compilación y Uso
+## Compilación y Uso
 
 ### Requisitos
 - Windows 10 o Windows 11 (x64).
@@ -152,6 +161,11 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 .\target\release\capsule.exe test-disk
 ```
 
+### Verificar arranque desde disco (sector de arranque + IDE PIO, Hito M5)
+```powershell
+.\target\release\capsule.exe test-boot-disk
+```
+
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell
 cargo test --workspace
@@ -159,7 +173,7 @@ cargo test --workspace
 
 ---
 
-## 📚 Documentación Técnica
+## Documentación Técnica
 
 Para conocer más detalles sobre la arquitectura interna y los desafíos técnicos:
 - [Arquitectura de Subsistemas (docs/ARCHITECTURE.md)](docs/ARCHITECTURE.md)
