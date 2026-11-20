@@ -78,11 +78,20 @@ impl SimpleVcpu {
 
     /// Ejecuta una sola instrucción en memoria física a partir de `regs.rip`.
     pub fn step(&mut self, mem: &mut GuestMemory) -> Result<Option<CpuExitReason>, String> {
-        // 1. Decodificar prefijo REX opcional (0x40 - 0x4F)
+        // 1. Decodificar prefijos legacy/REX (soporte mínimo: 0x66 operand-size)
+        let mut operand_size_16 = false;
         let mut rex = RexPrefix::default();
         let mut opcode = mem
             .read_u8(GuestAddress::new(self.regs.rip))
             .map_err(|e| format!("Error leyendo opcode en 0x{:016X}: {}", self.regs.rip, e))?;
+
+        if opcode == 0x66 {
+            operand_size_16 = true;
+            self.regs.rip += 1;
+            opcode = mem
+                .read_u8(GuestAddress::new(self.regs.rip))
+                .map_err(|e| format!("Error leyendo opcode tras prefijo 0x66: {}", e))?;
+        }
 
         if let Some(parsed_rex) = RexPrefix::parse(opcode) {
             rex = parsed_rex;
@@ -101,6 +110,17 @@ impl SimpleVcpu {
 
             // HLT
             0xF4 => Ok(Some(CpuExitReason::Halt)),
+
+            // MOV r8, imm8 (0xB0..=0xB7)
+            0xB0..=0xB7 => {
+                let reg_idx = (opcode - 0xB0) + if rex.b { 8 } else { 0 };
+                let imm = mem
+                    .read_u8(GuestAddress::new(self.regs.rip))
+                    .map_err(|e| format!("Error leyendo imm8: {}", e))?;
+                self.regs.rip += 1;
+                self.regs.set_reg8(reg_idx, imm, rex.present);
+                Ok(None)
+            }
 
             // MOV r32/r64, imm32/imm64 (0xB8..=0xBF)
             0xB8..=0xBF => {
@@ -508,13 +528,14 @@ impl SimpleVcpu {
                 Ok(Some(CpuExitReason::IoIn { port, size: 1 }))
             }
 
-            // IN EAX, imm8 (0xE5)
+            // IN AX/EAX, imm8 (0xE5) - 0x66 selecciona AX
             0xE5 => {
                 let port = mem
                     .read_u8(GuestAddress::new(self.regs.rip))
                     .map_err(|e| e.to_string())? as u16;
                 self.regs.rip += 1;
-                Ok(Some(CpuExitReason::IoIn { port, size: 4 }))
+                let size = if operand_size_16 { 2 } else { 4 };
+                Ok(Some(CpuExitReason::IoIn { port, size }))
             }
 
             // OUT imm8, AL (0xE6)
@@ -527,14 +548,19 @@ impl SimpleVcpu {
                 Ok(Some(CpuExitReason::IoOut { port, data, size: 1 }))
             }
 
-            // OUT imm8, EAX (0xE7)
+            // OUT imm8, AX/EAX (0xE7) - 0x66 selecciona AX
             0xE7 => {
                 let port = mem
                     .read_u8(GuestAddress::new(self.regs.rip))
                     .map_err(|e| e.to_string())? as u16;
                 self.regs.rip += 1;
-                let data = self.regs.eax();
-                Ok(Some(CpuExitReason::IoOut { port, data, size: 4 }))
+                if operand_size_16 {
+                    let data = (self.regs.rax & 0xFFFF) as u32;
+                    Ok(Some(CpuExitReason::IoOut { port, data, size: 2 }))
+                } else {
+                    let data = self.regs.eax();
+                    Ok(Some(CpuExitReason::IoOut { port, data, size: 4 }))
+                }
             }
 
             // IN AL, DX (0xEC)
@@ -543,10 +569,11 @@ impl SimpleVcpu {
                 Ok(Some(CpuExitReason::IoIn { port, size: 1 }))
             }
 
-            // IN EAX, DX (0xED)
+            // IN AX/EAX, DX (0xED) - 0x66 selecciona AX
             0xED => {
                 let port = (self.regs.rdx & 0xFFFF) as u16;
-                Ok(Some(CpuExitReason::IoIn { port, size: 4 }))
+                let size = if operand_size_16 { 2 } else { 4 };
+                Ok(Some(CpuExitReason::IoIn { port, size }))
             }
 
             // OUT DX, AL (0xEE)
@@ -556,11 +583,16 @@ impl SimpleVcpu {
                 Ok(Some(CpuExitReason::IoOut { port, data, size: 1 }))
             }
 
-            // OUT DX, EAX (0xEF)
+            // OUT DX, AX/EAX (0xEF) - 0x66 selecciona AX
             0xEF => {
                 let port = (self.regs.rdx & 0xFFFF) as u16;
-                let data = self.regs.eax();
-                Ok(Some(CpuExitReason::IoOut { port, data, size: 4 }))
+                if operand_size_16 {
+                    let data = (self.regs.rax & 0xFFFF) as u32;
+                    Ok(Some(CpuExitReason::IoOut { port, data, size: 2 }))
+                } else {
+                    let data = self.regs.eax();
+                    Ok(Some(CpuExitReason::IoOut { port, data, size: 4 }))
+                }
             }
 
             other => Ok(Some(CpuExitReason::InvalidOpcode(other))),
