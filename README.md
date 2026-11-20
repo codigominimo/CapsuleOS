@@ -102,7 +102,13 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Registros de línea (`LCR`), divisor de baudios (`DLL`/`DLM` vía `DLAB`), transmisor (`THR`), receptor (`RBR`) y estado (`LSR` con `THRE` y `DR`).
   - Recepción de logs `earlyprintk` y soporte para consola ttyS0.
   - Comando CLI de validación: `capsule.exe test-serial`.
-* [ ] **Hito M5 — Disco Virtual y Almacenamiento (RAW / VHD)** *(Próximo)*
+* [ ] **Hito M5 — Disco Virtual y Almacenamiento (RAW / VHD)** *(En progreso)*:
+  - Crate `capsule-storage` con abstracción `BlockDevice` y dispositivos en memoria.
+  - Soporte de imágenes RAW (crear/abrir, lectura/escritura por sectores, flush).
+  - Soporte de VHD *fixed* (footer `conectix`, checksum, geometría CHS, reopen y E/S).
+  - Extensión de la CPU con instrucciones `IN` por puerto (`0xE4/0xE5/0xEC/0xED`) para futuros controladores PIO.
+  - Comando CLI de validación: `capsule.exe test-storage`.
+  - Pendiente: controlador ATA/IDE (o virtio-blk), integración con `VirtualMachine` y arranque desde disco.
 
 ---
 
@@ -144,6 +150,11 @@ Guest halted
 .\target\release\capsule.exe
 ```
 Abre la ventana nativa de diagnóstico con la información del host y estado del runtime.
+
+### Verificar almacenamiento de bloques (Hito M5)
+```powershell
+.\target\release\capsule.exe test-storage
+```
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

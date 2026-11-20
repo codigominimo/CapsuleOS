@@ -499,9 +499,29 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
+            // IN AL, imm8 (0xE4)
+            0xE4 => {
+                let port = mem
+                    .read_u8(GuestAddress::new(self.regs.rip))
+                    .map_err(|e| e.to_string())? as u16;
+                self.regs.rip += 1;
+                Ok(Some(CpuExitReason::IoIn { port, size: 1 }))
+            }
+
+            // IN EAX, imm8 (0xE5)
+            0xE5 => {
+                let port = mem
+                    .read_u8(GuestAddress::new(self.regs.rip))
+                    .map_err(|e| e.to_string())? as u16;
+                self.regs.rip += 1;
+                Ok(Some(CpuExitReason::IoIn { port, size: 4 }))
+            }
+
             // OUT imm8, AL (0xE6)
             0xE6 => {
-                let port = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as u16;
+                let port = mem
+                    .read_u8(GuestAddress::new(self.regs.rip))
+                    .map_err(|e| e.to_string())? as u16;
                 self.regs.rip += 1;
                 let data = (self.regs.rax & 0xFF) as u32;
                 Ok(Some(CpuExitReason::IoOut { port, data, size: 1 }))
@@ -509,10 +529,24 @@ impl SimpleVcpu {
 
             // OUT imm8, EAX (0xE7)
             0xE7 => {
-                let port = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as u16;
+                let port = mem
+                    .read_u8(GuestAddress::new(self.regs.rip))
+                    .map_err(|e| e.to_string())? as u16;
                 self.regs.rip += 1;
                 let data = self.regs.eax();
                 Ok(Some(CpuExitReason::IoOut { port, data, size: 4 }))
+            }
+
+            // IN AL, DX (0xEC)
+            0xEC => {
+                let port = (self.regs.rdx & 0xFFFF) as u16;
+                Ok(Some(CpuExitReason::IoIn { port, size: 1 }))
+            }
+
+            // IN EAX, DX (0xED)
+            0xED => {
+                let port = (self.regs.rdx & 0xFFFF) as u16;
+                Ok(Some(CpuExitReason::IoIn { port, size: 4 }))
             }
 
             // OUT DX, AL (0xEE)

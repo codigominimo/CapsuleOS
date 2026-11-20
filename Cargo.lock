@@ -42,6 +42,7 @@ dependencies = [
  "capsule-cpu",
  "capsule-devices",
  "capsule-memory",
+ "capsule-storage",
  "capsule-vmm",
  "windows-sys",
 ]
@@ -52,6 +53,13 @@ version = "0.1.0"
 dependencies = [
  "capsule-core",
  "windows-sys",
+]
+
+[[package]]
+name = "capsule-storage"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
 ]
 
 [[package]]

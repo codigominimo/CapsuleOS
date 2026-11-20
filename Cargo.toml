@@ -6,6 +6,7 @@ members = [
     "crates/capsule-cpu",
     "crates/capsule-boot",
     "crates/capsule-devices",
+    "crates/capsule-storage",
     "crates/capsule-vmm",
     "crates/capsule-gui",
 ]
