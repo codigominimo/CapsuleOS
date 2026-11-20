@@ -1,5 +1,6 @@
 use capsule_storage::{
-    BlockDevice, MemoryDisk, RawDiskImage, StorageError, VhdFixedDisk, DEFAULT_SECTOR_SIZE,
+    BlockDevice, CowOverlayDisk, MemoryDisk, RawDiskImage, StorageError, VhdFixedDisk,
+    DEFAULT_SECTOR_SIZE,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -184,4 +185,131 @@ fn vhd_fixed_read_only_rejects_write() {
         .write_sectors(2, 1, &vec![0u8; DEFAULT_SECTOR_SIZE as usize])
         .unwrap_err();
     assert!(matches!(err, StorageError::ReadOnly));
+}
+
+#[test]
+fn cow_overlay_preserves_base_and_persists_changes_raw() {
+    let base_path = temp_image_path("cow_base_raw");
+    let ov_path = temp_image_path("cow_overlay_raw");
+    let _g1 = scopeguard_path(base_path.clone());
+    let _g2 = scopeguard_path(ov_path.clone());
+
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+    let mut base_seed = vec![0u8; sector_size * 4];
+    for (i, b) in base_seed.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(7).wrapping_add(0x11);
+    }
+
+    {
+        let mut base = RawDiskImage::create(&base_path, 16, DEFAULT_SECTOR_SIZE).expect("create base");
+        base.write_sectors(2, 4, &base_seed).expect("seed base");
+        base.flush().expect("flush base");
+    }
+
+    let mut write_buf = vec![0u8; sector_size * 2];
+    for (i, b) in write_buf.iter_mut().enumerate() {
+        *b = 0xAA ^ (i as u8);
+    }
+
+    {
+        let base = RawDiskImage::open(&base_path, DEFAULT_SECTOR_SIZE).expect("open base");
+        let mut cow = CowOverlayDisk::create(base, &ov_path).expect("create cow");
+        cow.write_sectors(3, 2, &write_buf).expect("write cow");
+
+        // Lectura dentro del overlay: mezcla de sector no modificado (LBA2 desde base) y modificados (LBA3-4 overlay)
+        let mut mixed = vec![0u8; sector_size * 3];
+        cow.read_sectors(2, 3, &mut mixed).expect("read mixed");
+        assert_eq!(&mixed[..sector_size], &base_seed[..sector_size], "LBA2 debe leerse de base");
+        assert_eq!(&mixed[sector_size..], &write_buf[..], "LBA3-4 deben leerse de overlay");
+
+        cow.flush().expect("flush cow");
+    }
+
+    // Base intacta
+    {
+        let mut base = RawDiskImage::open(&base_path, DEFAULT_SECTOR_SIZE).expect("reopen base");
+        let mut buf = vec![0u8; sector_size * 4];
+        base.read_sectors(2, 4, &mut buf).expect("read base");
+        assert_eq!(buf, base_seed, "La imagen base no debe modificarse por escrituras en overlay");
+    }
+
+    // Overlay persistente
+    {
+        let base = RawDiskImage::open(&base_path, DEFAULT_SECTOR_SIZE).expect("reopen base");
+        let mut cow = CowOverlayDisk::open(base, &ov_path).expect("open cow");
+        let mut out = vec![0u8; sector_size * 2];
+        cow.read_sectors(3, 2, &mut out).expect("read overlay");
+        assert_eq!(out, write_buf, "Cambios del overlay deben persistir tras reabrir");
+    }
+}
+
+#[test]
+fn cow_overlay_preserves_base_and_persists_changes_vhd() {
+    let base_path = temp_image_path("cow_base_vhd");
+    let ov_path = temp_image_path("cow_overlay_vhd");
+    let _g1 = scopeguard_path(base_path.clone());
+    let _g2 = scopeguard_path(ov_path.clone());
+
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+    let mut base_seed = vec![0u8; sector_size * 2];
+    for (i, b) in base_seed.iter_mut().enumerate() {
+        *b = 0x40u8.wrapping_add(i as u8);
+    }
+
+    {
+        let mut base = VhdFixedDisk::create(&base_path, 32, DEFAULT_SECTOR_SIZE).expect("create base vhd");
+        base.write_sectors(5, 2, &base_seed).expect("seed base");
+        base.flush().expect("flush base");
+    }
+
+    let mut write_buf = vec![0u8; sector_size];
+    for (i, b) in write_buf.iter_mut().enumerate() {
+        *b = 0xD2 ^ (i as u8);
+    }
+
+    {
+        let base = VhdFixedDisk::open(&base_path, DEFAULT_SECTOR_SIZE).expect("open base vhd");
+        let mut cow = CowOverlayDisk::create(base, &ov_path).expect("create cow");
+        cow.write_sectors(5, 1, &write_buf).expect("write cow");
+        cow.flush().expect("flush cow");
+    }
+
+    {
+        let mut base = VhdFixedDisk::open(&base_path, DEFAULT_SECTOR_SIZE).expect("reopen base vhd");
+        let mut buf = vec![0u8; sector_size];
+        base.read_sectors(5, 1, &mut buf).expect("read base");
+        assert_eq!(buf, &base_seed[..sector_size], "Base VHD debe permanecer intacta");
+    }
+
+    {
+        let base = VhdFixedDisk::open(&base_path, DEFAULT_SECTOR_SIZE).expect("reopen base vhd");
+        let mut cow = CowOverlayDisk::open(base, &ov_path).expect("open cow");
+        let mut out = vec![0u8; sector_size * 2];
+        cow.read_sectors(5, 2, &mut out).expect("read cow");
+        assert_eq!(&out[..sector_size], &write_buf[..], "Sector modificado debe venir de overlay");
+        assert_eq!(&out[sector_size..], &base_seed[sector_size..], "Sector no modificado debe venir de base");
+    }
+}
+
+#[test]
+fn cow_overlay_rejects_mismatched_base_geometry() {
+    let base1 = temp_image_path("cow_geom1");
+    let base2 = temp_image_path("cow_geom2");
+    let ov = temp_image_path("cow_geom_ov");
+    let _g1 = scopeguard_path(base1.clone());
+    let _g2 = scopeguard_path(base2.clone());
+    let _g3 = scopeguard_path(ov.clone());
+
+    {
+        let base = RawDiskImage::create(&base1, 16, DEFAULT_SECTOR_SIZE).expect("create base1");
+        let _cow = CowOverlayDisk::create(base, &ov).expect("create cow");
+    }
+    {
+        let base = RawDiskImage::create(&base2, 8, DEFAULT_SECTOR_SIZE).expect("create base2");
+        let err = match CowOverlayDisk::open(base, &ov) {
+            Ok(_) => panic!("Debe rechazar overlay con geometría distinta"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, StorageError::InvalidImage(_)), "Debe rechazar overlay con geometría distinta");
+    }
 }

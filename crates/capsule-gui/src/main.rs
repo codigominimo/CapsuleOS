@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M5 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M6 completados)
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
 //! Comandos CLI:
@@ -8,12 +8,13 @@
 //! - `capsule.exe test-storage`   : Verificación de almacenamiento de bloques (RAW y VHD fixed).
 //! - `capsule.exe test-disk`      : Verificación de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
 //! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de imagen RAW/VHD fixed 512-byte.
+//! - `capsule.exe test-cow`       : Verificación de persistencia Copy-on-Write (overlay) sobre imagen base RAW/VHD.
 //! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
 use capsule_core::{HostInfo, WhpxStatus, CAPSULE_VERSION};
-use capsule_storage::{BlockDevice, RawDiskImage, VhdFixedDisk, DEFAULT_SECTOR_SIZE};
+use capsule_storage::{BlockDevice, CowOverlayDisk, RawDiskImage, VhdFixedDisk, DEFAULT_SECTOR_SIZE};
 use capsule_vmm::{VcpuExit, VirtualMachine, VmConfig};
 use std::env;
 use std::fs;
@@ -443,6 +444,95 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_test_cow() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Persistencia Copy-on-Write (M6)    ");
+    println!("==================================================");
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+    let seed_lba1: Vec<u8> = (0..sector_size)
+        .map(|i| (i as u8).wrapping_mul(11).wrapping_add(0x29))
+        .collect();
+    let pattern_lba2: Vec<u8> = (0..sector_size)
+        .map(|i| 0x6Du8 ^ (i as u8).wrapping_mul(9))
+        .collect();
+    let zeros = vec![0u8; sector_size];
+
+    // RAW base + COW overlay (guest I/O + persistencia)
+    let raw_base = std::env::temp_dir().join(format!("capsuleos_m6_cow_base_{nanos}.img"));
+    let raw_ov = std::env::temp_dir().join(format!("capsuleos_m6_cow_{nanos}.cow"));
+    {
+        let mut base = RawDiskImage::create(&raw_base, 32, DEFAULT_SECTOR_SIZE)?;
+        base.write_sectors(1, 1, &seed_lba1)?;
+        base.flush()?;
+    }
+    {
+        let base = RawDiskImage::open(&raw_base, DEFAULT_SECTOR_SIZE)?;
+        let cow = CowOverlayDisk::create(base, &raw_ov)?;
+        run_ide_guest_on_disk(Box::new(cow), &seed_lba1, &pattern_lba2, "COW/RAW")?;
+    }
+    {
+        let mut base = RawDiskImage::open(&raw_base, DEFAULT_SECTOR_SIZE)?;
+        let mut lba2 = vec![0u8; sector_size];
+        base.read_sectors(2, 1, &mut lba2)?;
+        assert_eq!(lba2, zeros, "COW/RAW: la imagen base no debe modificarse");
+        println!("  [OK] RAW base intacta tras escrituras guest en overlay");
+    }
+    {
+        let base = RawDiskImage::open(&raw_base, DEFAULT_SECTOR_SIZE)?;
+        let mut cow = CowOverlayDisk::open(base, &raw_ov)?;
+        let mut lba2 = vec![0u8; sector_size];
+        cow.read_sectors(2, 1, &mut lba2)?;
+        assert_eq!(lba2, pattern_lba2, "COW/RAW: el overlay no persistió los cambios");
+        let mut lba1 = vec![0u8; sector_size];
+        cow.read_sectors(1, 1, &mut lba1)?;
+        assert_eq!(lba1, seed_lba1, "COW/RAW: lectura de sector no modificado debe venir de base");
+        println!("  [OK] RAW overlay persistente y lectura mezclada base/overlay");
+    }
+
+    // VHD fixed base + COW overlay (persistencia sin tocar base)
+    let vhd_base = std::env::temp_dir().join(format!("capsuleos_m6_cow_base_{nanos}.vhd"));
+    let vhd_ov = std::env::temp_dir().join(format!("capsuleos_m6_cow_{nanos}_vhd.cow"));
+    {
+        let mut base = VhdFixedDisk::create(&vhd_base, 32, DEFAULT_SECTOR_SIZE)?;
+        base.write_sectors(1, 1, &seed_lba1)?;
+        base.flush()?;
+    }
+    {
+        let base = VhdFixedDisk::open(&vhd_base, DEFAULT_SECTOR_SIZE)?;
+        let cow = CowOverlayDisk::create(base, &vhd_ov)?;
+        run_ide_guest_on_disk(Box::new(cow), &seed_lba1, &pattern_lba2, "COW/VHD")?;
+    }
+    {
+        let mut base = VhdFixedDisk::open(&vhd_base, DEFAULT_SECTOR_SIZE)?;
+        let mut lba2 = vec![0u8; sector_size];
+        base.read_sectors(2, 1, &mut lba2)?;
+        assert_eq!(lba2, zeros, "COW/VHD: la imagen base no debe modificarse");
+        println!("  [OK] VHD base intacta tras escrituras guest en overlay");
+    }
+    {
+        let base = VhdFixedDisk::open(&vhd_base, DEFAULT_SECTOR_SIZE)?;
+        let mut cow = CowOverlayDisk::open(base, &vhd_ov)?;
+        let mut lba2 = vec![0u8; sector_size];
+        cow.read_sectors(2, 1, &mut lba2)?;
+        assert_eq!(lba2, pattern_lba2, "COW/VHD: el overlay no persistió los cambios");
+        println!("  [OK] VHD overlay persistente");
+    }
+
+    let _ = fs::remove_file(&raw_base);
+    let _ = fs::remove_file(&raw_ov);
+    let _ = fs::remove_file(&vhd_base);
+    let _ = fs::remove_file(&vhd_ov);
+
+    println!("--------------------------------------------------");
+    println!("  Persistencia COW (overlay): ÉXITO");
+    println!("  Bases: RAW, VHD (fixed) | Imagen base preservada, cambios en overlay");
+    println!("==================================================");
+
+    Ok(())
+}
+
 fn open_disk_image_for_boot(path: &str) -> Result<Box<dyn BlockDevice>, Box<dyn std::error::Error>> {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".vhd") {
@@ -751,7 +841,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(74, 222, 128));
             draw_text_line(
                 hdc,
-                "OK - UART 16550, Linux Direct Boot y Virtual Disk ATA/IDE PIO (Hitos M0-M5 completados)",
+                "OK - UART, Linux Direct Boot, ATA/IDE PIO y Persistencia COW (Hitos M0-M6 completados)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -763,7 +853,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(220, 225, 235));
             draw_text_line(
                 hdc,
-                "M5: RAW/VHD fixed, READ/WRITE/FLUSH/MULTIPLE, IRQ/nIEN/SRST, boot LBA0->0x7C00 (test-disk/test-boot-disk)",
+                "M5-M6: RAW/VHD fixed, READ/WRITE/FLUSH/MULTIPLE, boot LBA0->0x7C00, overlay COW (test-disk/test-boot-disk/test-cow)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -776,7 +866,7 @@ unsafe extern "system" fn window_proc(
             SelectObject(hdc, code_font);
             draw_text_line(
                 hdc,
-                "Siguiente paso: M6 (COW/dinamicos), M7 (PIC/APIC+INTRQ) y M12 (firmware/boot real)",
+                "Siguiente paso: M7 (PIC/APIC + INTRQ), M12 (firmware/boot real) y formatos dinámicos/virtio-blk",
                 48,
                 current_y,
                 rect.right - 48,
@@ -941,6 +1031,14 @@ fn main() {
             .map(|s| s.as_str());
         if let Err(e) = run_test_boot_disk(path) {
             eprintln!("Error en test-boot-disk: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-cow" || arg == "--test-cow") {
+        if let Err(e) = run_test_cow() {
+            eprintln!("Error en test-cow: {}", e);
             std::process::exit(1);
         }
         return;

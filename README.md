@@ -108,7 +108,12 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Integración VM: `attach_primary_master_disk`, E/S PIO 8/16/32-bit y arranque mínimo desde disco (`boot_from_primary_master_disk`: carga LBA0 en `0x7C00`, `RIP=0x7C00`).
   - Validación: transferencias PIO (incl. multi-sector y `sector_count=0` => 256 sectores), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, y boot sector con carga multi-sector vía IDE.
   - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk [path]` (self-test o arranque experimental de imagen RAW/VHD fixed 512-byte).
-  - Alcance diferido (hitossiguientes): INTRQ real vía PIC/APIC (M7), mayor compatibilidad ATA/drivers y arranque real desde disco/firmware (M12), y formatos dinámicos/COW o `virtio-blk` (M6).
+  - Alcance diferido: INTRQ real vía PIC/APIC (M7), mayor compatibilidad ATA/drivers y arranque real desde disco/firmware (M12), y formatos dinámicos o `virtio-blk`.
+* [x] **Hito M6 - Copy-on-Write Persistence**:
+  - Overlay COW (`CowOverlayDisk`) sobre cualquier `BlockDevice` base (p. ej. RAW, VHD fixed), con bitmap por sector y persistencia en archivo de overlay.
+  - Lectura transparente: sectores no modificados se leen de la base; sectores escritos se resuelven desde el overlay. Las escrituras nunca modifican la imagen base.
+  - Validación de geometría base/overlay, reapertura con persistencia de cambios y operación a través del stack ATA/IDE+VM (guest READ/WRITE/FLUSH) sin alterar la base.
+  - Comando CLI de validación: `capsule.exe test-cow`.
 
 ---
 
@@ -168,6 +173,13 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 
 # Arranque experimental de una imagen externa RAW o VHD fixed (sector 512 bytes)
 .\target\release\capsule.exe test-boot-disk .\ruta\disco.img
+```
+
+### Verificar persistencia Copy-on-Write (overlay COW, Hito M6)
+```powershell
+# Guest ATA PIO READ/WRITE/FLUSH sobre overlay COW (bases RAW y VHD fixed)
+# Valida que la imagen base permanezca intacta y los cambios persistan en el overlay
+.\target\release\capsule.exe test-cow
 ```
 
 ### Ejecutar la batería de pruebas automatizadas

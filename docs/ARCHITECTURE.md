@@ -104,11 +104,11 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
     * Bus PCI sintético para descubrimiento de dispositivos periféricos.
 
 * **`capsule-storage`**:
-  * Abstracción de medios de almacenamiento (`BlockDevice`) y backends implementados: RAM (`MemoryDisk`), RAW y VHD fixed (512-byte).
-  * Formatos/funciones planeadas: VHD dynamic, VHDX, QCOW2 y capa COW/overlay (M6).
+  * Abstracción de medios de almacenamiento (`BlockDevice`) y backends implementados: RAM (`MemoryDisk`), RAW, VHD fixed (512-byte) y overlay COW (`CowOverlayDisk`, bitmap por sector, base inmutable).
+  * Formatos/funciones planeadas: VHD dynamic, VHDX, QCOW2 y `virtio-blk`.
   * Controladores de almacenamiento virtual:
-    * IDE / ATA PIO primario (maestro, LBA28) implementado para M5 (sin DMA/intrínseco INTRQ cableado a PIC/APIC todavía).
-    * `virtio-blk` planeado para alto rendimiento en guests modernos (post-M5).
+    * IDE / ATA PIO primario (maestro, LBA28) implementado para M5/M6 (sin DMA/INTRQ cableado a PIC/APIC todavía).
+    * `virtio-blk` planeado para alto rendimiento en guests modernos.
 
 * **`capsule-display`**:
   * Framebuffer gráfico lineal en memoria (formato BGRA32 / BGR24).
@@ -136,9 +136,9 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Carga de `vmlinuz` + `initramfs` + `boot_params` (zero-page) directo en memoria RAM del guest, permitiendo arranque instantáneo de Linux en milisegundos sin pasar por la BIOS.
 
 ### 2.5. Empaquetado y Persistencia
-* **`capsule-persistence`**:
-  * Capa de disco Copy-On-Write (COW).
-  * Mantiene la imagen base intacta dentro del bundle y almacena las modificaciones en un archivo diferencial (`.data` o payload persistente).
+* **`capsule-persistence`** (actualmente implementado en `capsule-storage` como `CowOverlayDisk`, M6):
+  * Capa de disco Copy-on-Write (COW) con bitmap por sector y overlay persistente en archivo.
+  * Mantiene la imagen base intacta y almacena las modificaciones en un archivo diferencial/overlay (integrable al bundle/cápsula en hitos posteriores).
 
 * **`capsule-bundle`**:
   * Especificación y parser del contenedor monolitico Capsule:

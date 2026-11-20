@@ -14,7 +14,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M3** | **Direct Linux Boot** | Soporte del protocolo de arranque de Linux (bzImage direct boot) y carga de kernel | **Completado** |
 | **M4** | **Linux Console & Shell** | Arranque de Linux con initramfs BusyBox y consola interactiva COM1/UART | **Completado** |
 | **M5** | **Virtual Disk (RAW/VHD)** | Controlador ATA/IDE PIO, imágenes RAW/VHD fixed y arranque mínimo desde disco (LBA0) | **Completado** |
-| **M6** | **Copy-on-Write Persistence** | Persistencia mediante overlay COW sin modificar la imagen base | Pendiente |
+| **M6** | **Copy-on-Write Persistence** | Overlay COW (bitmap por sector) sobre imágenes base RAW/VHD sin modificarlas, con persistencia | **Completado** |
 | **M7** | **Virtual Platform Devices** | PIT, PIC/APIC, RTC y bus PCI simplificado para soporte de SO completos | Pendiente |
 | **M8** | **Networking (User-mode NAT)**| Dispositivo virtio-net con pila SLIRP en modo usuario (acceso a internet sin drivers host) | Pendiente |
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE y renderizado en tiempo real en la ventana Win32 | Pendiente |
