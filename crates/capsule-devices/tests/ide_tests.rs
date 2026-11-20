@@ -116,3 +116,82 @@ fn ide_error_on_no_device() {
     let status = ide.read_io(0x1F7, 1);
     assert_ne!(status & 0x01, 0, "Debe señalizar ERR si no hay dispositivo");
 }
+
+#[test]
+fn ide_pio_read_write_multiple_sectors() {
+    let mut disk = MemoryDisk::new(32, DEFAULT_SECTOR_SIZE).expect("disk");
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+
+    let mut lba2 = vec![0u8; sector_size];
+    let mut lba3 = vec![0u8; sector_size];
+    for i in 0..sector_size {
+        lba2[i] = (i as u8).wrapping_mul(7).wrapping_add(0x10);
+        lba3[i] = (i as u8).wrapping_mul(11).wrapping_add(0x20);
+    }
+    disk.write_sectors(2, 1, &lba2).unwrap();
+    disk.write_sectors(3, 1, &lba3).unwrap();
+
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // READ 2 sectors starting at LBA 2
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 2, 1); // sector count = 2
+    ide.write_io(0x1F3, 2, 1); // LBA low
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1);
+    let status = ide.read_io(0x1F7, 1);
+    assert!(status_drq_drdy_dsc(status), "READ multi-sector debe activar DRQ");
+
+    let mut read_back = vec![0u8; sector_size * 2];
+    for i in (0..read_back.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        read_back[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(&read_back[..sector_size], &lba2[..], "Sector LBA2 incorrecto");
+    assert_eq!(&read_back[sector_size..], &lba3[..], "Sector LBA3 incorrecto");
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x08, 0, "DRQ debe limpiarse tras leer todos los sectores");
+
+    // WRITE 2 sectors starting at LBA 4
+    let mut w4 = vec![0u8; sector_size];
+    let mut w5 = vec![0u8; sector_size];
+    for i in 0..sector_size {
+        w4[i] = 0x55 ^ (i as u8);
+        w5[i] = 0xAA ^ (i as u8);
+    }
+    let mut payload = Vec::with_capacity(sector_size * 2);
+    payload.extend_from_slice(&w4);
+    payload.extend_from_slice(&w5);
+
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 2, 1);
+    ide.write_io(0x1F3, 4, 1); // LBA 4
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x30, 1);
+    assert!(status_drq_drdy_dsc(ide.read_io(0x1F7, 1)), "WRITE multi-sector debe activar DRQ");
+    for i in (0..payload.len()).step_by(4) {
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&payload[i..i + 4]);
+        ide.write_io(0x1F0, u32::from_le_bytes(bytes), 4);
+    }
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x01, 0, "WRITE multi-sector no debe reportar error");
+
+    ide.write_io(0x1F7, 0xE7, 1); // flush
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x01, 0, "FLUSH no debe reportar error");
+
+    // Verify by reading back 2 sectors
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 2, 1);
+    ide.write_io(0x1F3, 4, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1);
+    let mut verify = vec![0u8; sector_size * 2];
+    for i in (0..verify.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        verify[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(verify, payload, "Los sectores escritos en multi-sector deben persistir");
+}
