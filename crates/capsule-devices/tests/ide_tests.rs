@@ -195,3 +195,55 @@ fn ide_pio_read_write_multiple_sectors() {
     }
     assert_eq!(verify, payload, "Los sectores escritos en multi-sector deben persistir");
 }
+
+#[test]
+fn ide_irq_pending_cleared_by_status_not_alt_status() {
+    let disk = MemoryDisk::new(16, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F7, 0xEC, 1); // IDENTIFY
+    assert!(ide.irq_pending(), "IDENTIFY debe dejar IRQ pendiente");
+
+    let _ = ide.read_io(0x3F6, 1); // alt status
+    assert!(ide.irq_pending(), "La lectura de alternate status no debe limpiar IRQ");
+
+    let _ = ide.read_io(0x1F7, 1); // status
+    assert!(!ide.irq_pending(), "La lectura de status debe limpiar IRQ pendiente");
+}
+
+#[test]
+fn ide_nien_masks_irq_and_srst_resets_state() {
+    let disk = MemoryDisk::new(16, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // Generar IRQ pendiente
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F7, 0xEC, 1);
+    assert!(ide.irq_pending());
+
+    // nIEN enmascara IRQ pendiente
+    ide.write_io(0x3F6, 0x02, 1);
+    assert!(!ide.irq_pending(), "nIEN debe enmascarar la IRQ pendiente");
+    ide.write_io(0x3F6, 0x00, 1);
+    assert!(ide.irq_pending(), "Al limpiar nIEN la IRQ pendiente debe volver a ser visible");
+
+    // SRST resetea estado y limpia IRQ
+    ide.write_io(0x3F6, 0x04, 1);
+    assert!(!ide.irq_pending(), "SRST debe limpiar la IRQ pendiente");
+    let status = ide.read_io(0x1F7, 1);
+    assert_eq!(status & (0x40 | 0x10), 0x40 | 0x10, "Tras SRST el dispositivo debe quedar DRDY/DSC si hay disco");
+    assert_eq!(status & 0x01, 0, "SRST no debe dejar error");
+
+    // El controlador debe seguir operativo tras SRST
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 0, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1); // READ
+    let st = ide.read_io(0x1F7, 1);
+    assert_eq!(st & 0x08, 0x08, "Tras SRST debe poder ejecutarse READ y activar DRQ");
+}

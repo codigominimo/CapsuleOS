@@ -68,6 +68,10 @@ pub struct IdeController {
     drive_head: u8, // bit 4 = drive select (0 master, 1 slave), bit 6 = LBA
     status: u8,
 
+    // Control de dispositivo / interrupciones (modelo simplificado)
+    nien: bool,        // Device Control bit 1: deshabilita INTRQ cuando está activo
+    irq_pending: bool, // Condición de IRQ pendiente (se limpia al leer status 0x1F7)
+
     // Transferencia PIO
     data_buf: Vec<u8>,
     data_index: usize,
@@ -91,6 +95,8 @@ impl IdeController {
             lba_high: 0,
             drive_head: 0xE0, // LBA bit set, master
             status: 0,
+            nien: false,
+            irq_pending: false,
             data_buf: Vec::new(),
             data_index: 0,
             pio_write: false,
@@ -103,6 +109,7 @@ impl IdeController {
         self.master = Some(IdeDrive::new(disk));
         self.status = SR_DRDY | SR_DSC;
         self.error = 0;
+        self.irq_pending = false;
     }
 
     pub fn attach_slave(&mut self, disk: Box<dyn BlockDevice>) {
@@ -113,8 +120,34 @@ impl IdeController {
         self.master.is_some()
     }
 
+    /// Indica si hay una condición de IRQ pendiente y no enmascarada por nIEN.
+    pub fn irq_pending(&self) -> bool {
+        self.irq_pending && !self.nien
+    }
+
     pub fn handles_port(&self, port: u16) -> bool {
         (port >= self.io_base && port <= self.io_base + 7) || port == self.ctrl_port
+    }
+
+    fn software_reset(&mut self) {
+        self.error = 0;
+        self.features = 0;
+        self.sector_count = 0;
+        self.lba_low = 0;
+        self.lba_mid = 0;
+        self.lba_high = 0;
+        self.drive_head = 0xE0;
+        self.data_buf.clear();
+        self.data_index = 0;
+        self.pio_write = false;
+        self.sectors_remaining = 0;
+        self.current_lba = 0;
+        self.irq_pending = false;
+        self.status = if self.selected_drive_present() {
+            SR_DRDY | SR_DSC
+        } else {
+            0
+        };
     }
 
     fn selected_is_slave(&self) -> bool {
@@ -159,6 +192,7 @@ impl IdeController {
         self.data_index = 0;
         self.pio_write = false;
         self.sectors_remaining = 0;
+        self.irq_pending = true;
     }
 
     fn prepare_read(&mut self, lba: u64, count: u16) {
@@ -186,6 +220,7 @@ impl IdeController {
                 self.current_lba = lba;
                 self.status = SR_DRDY | SR_DSC | SR_DRQ;
                 self.error = 0;
+                self.irq_pending = true;
             }
             Err(_) => self.set_error_abort(),
         }
@@ -206,6 +241,7 @@ impl IdeController {
         self.current_lba = lba;
         self.status = SR_DRDY | SR_DSC | SR_DRQ;
         self.error = 0;
+        self.irq_pending = true;
     }
 
     fn commit_write(&mut self) {
@@ -240,6 +276,7 @@ impl IdeController {
                 self.data_index = 0;
                 self.pio_write = false;
                 self.sectors_remaining = 0;
+                self.irq_pending = true;
             }
             Err(_) => self.set_error_abort(),
         }
@@ -289,6 +326,7 @@ impl IdeController {
         self.sectors_remaining = 1;
         self.status = SR_DRDY | SR_DSC | SR_DRQ;
         self.error = 0;
+        self.irq_pending = true;
     }
 
     fn execute_command(&mut self, cmd: u8) {
@@ -324,6 +362,7 @@ impl IdeController {
                     Ok(()) => {
                         self.status = SR_DRDY | SR_DSC;
                         self.error = 0;
+                        self.irq_pending = true;
                     }
                     Err(_) => self.set_error_abort(),
                 }
@@ -337,7 +376,7 @@ impl IdeController {
 
     pub fn read_io(&mut self, port: u16, size: u8) -> u32 {
         if port == self.ctrl_port {
-            // Alt status (no limpia IRQ pendiente en esta implementación)
+            // Alternate status: no limpia la condición de IRQ pendiente
             return self.status as u32;
         }
         let offset = port.saturating_sub(self.io_base);
@@ -350,8 +389,10 @@ impl IdeController {
             REG_LBA_HIGH => self.lba_high as u32,
             REG_DRIVE_HEAD => self.drive_head as u32,
             REG_STATUS => {
-                // Leer status normalmente limpia la condición de IRQ (no modelada aquí)
-                self.status as u32
+                // Leer status limpia la condición de IRQ pendiente (modelo simplificado)
+                let s = self.status as u32;
+                self.irq_pending = false;
+                s
             }
             _ => 0xFF,
         }
@@ -359,8 +400,11 @@ impl IdeController {
 
     pub fn write_io(&mut self, port: u16, val: u32, size: u8) {
         if port == self.ctrl_port {
-            // Device control (nIEN, SRST). Ignorado en esta etapa.
-            let _ = val;
+            // Device Control: bit 1 = nIEN, bit 2 = SRST
+            self.nien = (val & 0x02) != 0;
+            if (val & 0x04) != 0 {
+                self.software_reset();
+            }
             return;
         }
         let offset = port.saturating_sub(self.io_base);
