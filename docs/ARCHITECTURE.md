@@ -73,8 +73,8 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
         fn run_vcpu(&mut self, id: usize) -> Result<VcpuExit, VmmError>;
     }
     ```
-  * Despacho de salidas de la VM (VM Exits: Port I/O, HLT, errores) y, en el backend software actual, avance por tick/sondeo de dispositivos de plataforma y PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, virtqueues/NAT) con acceso a memoria guest, ademas de stepping incremental para UI y utilidades de lectura/copia de framebuffer VBE.
-  * Nota: MMIO y entrega/inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET) pendientes.
+  * Despacho de salidas de la VM (VM Exits: Port I/O, HLT, errores) y, en el backend software actual, avance por tick/sondeo de dispositivos de plataforma y PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, PS/2 IRQ1/IRQ12, virtqueues/NAT) con acceso a memoria guest, además de stepping incremental para UI, utilidades de lectura/copia de framebuffer VBE e inyección de eventos de entrada PS/2 desde la GUI.
+  * Nota: MMIO y entrega/inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET/APIC) pendientes.
 
 * **`capsule-cpu`**:
   * Definición del estado de la CPU x86-64: registros de propósito general (RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP, R8-R15), puntero de instrucción (RIP), registro de banderas (RFLAGS), registros de control (CR0, CR2, CR3, CR4, CR8), registros de segmento (CS, DS, SS, ES, FS, GS), tablas descriptores (GDTR, IDTR, LDTR, TR) y MSRs esenciales.
@@ -98,14 +98,15 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-devices`**:
   * Enrutador de buses: Port I/O (espacio de direcciones de 16 bits `in`/`out`).
-  * Dispositivos de plataforma implementados (M4-M9):
+  * Dispositivos de plataforma implementados (M4-M10):
     * Puerto serie UART 16550 (COM1 en 0x3F8) para salida de consola y depuración del kernel.
     * Controlador de interrupciones PIC 8259 dual (maestro/esclavo) con ICW/OCW, IMR/ISR/IRR, cascada y EOI.
     * Temporizador PIT 8254 (canales 0-2, modos básicos) y RTC/CMOS MC146818 mínimo (0x70/0x71).
+    * Controlador PS/2 i8042 (puertos `0x60/0x64`) con teclado (scancodes Set 1) y ratón (paquetes PS/2 de 3 bytes), con IRQ1/IRQ12 reflejadas al PIC por sondeo según datos pendientes.
     * Bus PCI extensible (mecanismo #1, `0xCF8/0xCFC`) con enrutamiento de config/E/S, registro de funciones PCI y sondeo de dispositivos con acceso a memoria guest.
     * NIC `VirtioNetPci` transitional (legacy PCI I/O BAR0, split virtqueues RX/TX) integrada al bus PCI; sin MMIO.
     * Adaptador grafico `BochsVbe` (puertos DISPI `0x01CE/0x01CF`) con LFB en RAM guest (`0x0040_0000`) para render host por sondeo.
-  * Pendiente: MMIO, inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET), APIC local/IO-APIC y mayor fidelidad temporal.
+  * Pendiente: MMIO, inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET/APIC), APIC local/IO-APIC y mayor fidelidad temporal.
 
 * **`capsule-storage`**:
   * Abstracción de medios de almacenamiento (`BlockDevice`) y backends implementados: RAM (`MemoryDisk`), RAW, VHD fixed (512-byte) y overlay COW (`CowOverlayDisk`, bitmap por sector, base inmutable).
@@ -120,9 +121,9 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
     * Bochs VBE DISPI (M9, validación inicial 32bpp/LFB en RAM guest).
     * `virtio-gpu` (futuro).
   * Sincronización de refresco con la ventana mediante timer GUI y blit Win32 (`StretchDIBits`).
-* **`capsule-input`**:
-  * Controlador de teclado y ratón PS/2 (puertos 0x60/0x64).
-  * Conversión de mensajes de entrada Win32 (`WM_KEYDOWN`, `WM_KEYUP`, `WM_MOUSEMOVE`, etc.) a scan codes PS/2 (Scan Code Set 1 y 2).
+* **`capsule-input`** (integrado actualmente en `capsule-devices::I8042Ps2Controller` + `capsule-gui`, M10; crate dedicado pendiente):
+  * Controlador PS/2 i8042 (0x60/0x64) con teclado (Set 1) y ratón (paquetes de 3 bytes) e IRQ1/IRQ12 reflejadas al PIC por sondeo.
+  * Conversión de eventos Win32 (`WM_KEYDOWN/UP`, `WM_SYSKEY*`, `WM_MOUSEMOVE`, `WM_*BUTTON*`) a scancodes/paquetes PS/2 inyectados en la VM. Pendiente: mapeo de teclado más completo, rueda/botones extendidos y USB/HID.
 
 * **`capsule-network`**:
   * Pila de red en modo usuario (`UserModeNat`, M8) sin TAP/Wintun ni privilegios de administrador:
@@ -157,7 +158,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 * **`capsule-gui`**:
   * Ventana nativa Win32.
   * Bucle de ejecución por pasos de VM (`step_once/run_steps`) y renderizado en tiempo real del framebuffer guest mediante GDI/DIB (`StretchDIBits`) cuando VBE LFB está activo (M9), con fallback a panel de diagnósticos.
-  * Manejo básico de ventana/redimensionado y cierre (input de teclado/ratón hacia el guest pendiente, M10).
+  * Captura y traducción de entrada Win32 (teclado/ratón) a eventos PS/2 del guest (M10), con captura/liberación de ratón en ventana (clic/Ctrl+Esc). Pendiente: mayor fidelidad de input y mapeos extendidos.
 * **`capsule-cli`**:
   * Entrada por línea de comandos para control, inspección, arranque headless e integración con scripts.
 

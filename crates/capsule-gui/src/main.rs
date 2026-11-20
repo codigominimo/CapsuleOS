@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M9 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M10 completados)
 //!
 //! Punto de entrada de la aplicacion `capsule.exe`.
 //! Comandos CLI:
@@ -12,6 +12,7 @@
 //! - `capsule.exe test-platform`    : Verificacion de plataforma virtual (PIC 8259, PIT 8254, RTC/CMOS, PCI).
 //! - `capsule.exe test-network`     : Verificacion de red en modo usuario (NAT) y virtio-net PCI (M8).
 //! - `capsule.exe test-framebuffer` : Verificacion de framebuffer VGA/Bochs VBE y LFB (M9).
+//! - `capsule.exe test-input`       : Verificacion de entrada PS/2 (i8042, teclado/raton, IRQ1/IRQ12) (M10).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -34,12 +35,16 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage, RegisterClassW,
-    SetTimer, SetWindowLongPtrW, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WM_CLOSE, WM_CREATE,
-    WM_DESTROY, WM_KEYDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
+    GetCursorPos, GetMessageW, GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage,
+    RegisterClassW, SetCursorPos, SetTimer, SetWindowLongPtrW, ShowCursor, ShowWindow,
+    TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA,
+    IDC_ARROW, MSG, SW_SHOW, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
+    WS_OVERLAPPEDWINDOW,
 };
 
 static GLOBAL_HOST_INFO: OnceLock<HostInfo> = OnceLock::new();
@@ -827,6 +832,200 @@ fn run_test_framebuffer() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     Ok(())
 }
+
+fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Entrada PS/2 i8042 (Hito M10)       ");
+    println!("==================================================");
+
+    // Teclado: inyectar scancode Set 1 (make 'A' = 0x1E) y leerlo desde guest via puertos 0x64/0x60.
+    // Guest: IN AL,64h -> [0x0100], IN AL,60h -> [0x0101], HLT
+    let mut vm = VirtualMachine::new(VmConfig {
+        name: "InputTestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    })?;
+    let kbd_code = [
+        0xE4, 0x64, // in al, 0x64
+        0xBB, 0x00, 0x01, 0x00, 0x00, // mov ebx, 0x0100
+        0x88, 0x03, // mov [ebx], al
+        0xE4, 0x60, // in al, 0x60
+        0xBB, 0x01, 0x01, 0x00, 0x00, // mov ebx, 0x0101
+        0x88, 0x03, // mov [ebx], al
+        0xF4, // hlt
+    ];
+    vm.load_code(GuestAddress::new(0), &kbd_code)?;
+    vm.set_rip(0);
+    vm.inject_ps2_scancodes(&[0x1E]);
+    let exit = vm.run()?;
+    assert_eq!(exit, VcpuExit::Halt, "test-input: guest teclado debe terminar con HLT");
+    let mut out = [0u8; 2];
+    vm.memory.read_bytes(GuestAddress::new(0x0100), &mut out)?;
+    assert_ne!(out[0] & 0x01, 0, "PS/2 status: bit OUT_FULL debe estar activo con scancode pendiente");
+    assert_eq!(out[0] & 0x20, 0, "PS/2 status: bit AUX no debe estar activo para dato de teclado");
+    assert_eq!(out[1], 0x1E, "PS/2 data: scancode de teclado incorrecto");
+    println!("  [OK] Teclado PS/2: inyeccion de scancode y lectura guest por 0x64/0x60");
+
+    // Ratón: habilitar reporting via 0xD4/0xF4, consumir ACK, luego inyectar evento y leer paquete.
+    let mut vm2 = VirtualMachine::new(VmConfig {
+        name: "InputMouseTestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    })?;
+    let enable_mouse = [
+        0xB0, 0xD4, 0xE6, 0x64, // out 64, D4
+        0xB0, 0xF4, 0xE6, 0x60, // out 60, F4 (enable data reporting)
+        0xE4, 0x60,             // in al, 0x60 (ACK)
+        0xBB, 0x00, 0x02, 0x00, 0x00, // mov ebx, 0x0200
+        0x88, 0x03,             // mov [ebx], al
+        0xF4,
+    ];
+    vm2.load_code(GuestAddress::new(0), &enable_mouse)?;
+    vm2.set_rip(0);
+    let exit = vm2.run()?;
+    assert_eq!(exit, VcpuExit::Halt);
+    let mut ack = [0u8; 1];
+    vm2.memory.read_bytes(GuestAddress::new(0x0200), &mut ack)?;
+    assert_eq!(ack[0], 0xFA, "PS/2 mouse: se esperaba ACK 0xFA a F4, got 0x{:02X}", ack[0]);
+
+    vm2.inject_ps2_mouse_event(5, 3, 0x01, 0); // dx, dy (pantalla), botón izquierdo
+    let read_packet = [
+        0xBF, 0x01, 0x02, 0x00, 0x00, // mov edi, 0x0201
+        0xB9, 0x03, 0x00, 0x00, 0x00, // mov ecx, 3
+        // loop:
+        0xE4, 0x60, // in al, 0x60
+        0x88, 0x07, // mov [edi], al
+        0xFF, 0xC7, // inc edi
+        0xFF, 0xC9, // dec ecx
+        0x75, 0xF6, // jnz loop
+        0xF4,       // hlt
+    ];
+    vm2.load_code(GuestAddress::new(0), &read_packet)?;
+    vm2.set_rip(0);
+    let exit = vm2.run()?;
+    assert_eq!(exit, VcpuExit::Halt);
+    let mut pkt = [0u8; 3];
+    vm2.memory.read_bytes(GuestAddress::new(0x0201), &mut pkt)?;
+    assert_ne!(pkt[0] & 0x08, 0, "PS/2 mouse: bit always-1 ausente en byte de estado del paquete");
+    assert_ne!(pkt[0] & 0x01, 0, "PS/2 mouse: botón izquierdo no reflejado en paquete");
+    assert_eq!(pkt[1], 0x05u8, "PS/2 mouse: delta X incorrecto en paquete");
+    // dy pantalla +3 => PS/2 Y hacia arriba => -3 (0xFD en i8)
+    assert_eq!(pkt[2], 0xFDu8, "PS/2 mouse: delta Y (invertido) incorrecto en paquete");
+    println!("  [OK] Ratón PS/2: comando D4/F4, ACK y paquete de movimiento/botones por 0x60");
+
+    // IRQ1/IRQ12 reflejadas al PIC por sondeo (tick_platform) cuando hay datos pendientes.
+    // IRQ1: teclado pendiente
+    let mut vm3 = VirtualMachine::new(VmConfig {
+        name: "InputIrq1TestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    })?;
+    for dev in &mut vm3.devices {
+        if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
+            pic.write_io(0x20, 0x11, 1);
+            pic.write_io(0xA0, 0x11, 1);
+            pic.write_io(0x21, 0x20, 1);
+            pic.write_io(0xA1, 0x28, 1);
+            pic.write_io(0x21, 0x04, 1);
+            pic.write_io(0xA1, 0x02, 1);
+            pic.write_io(0x21, 0x01, 1);
+            pic.write_io(0xA1, 0x01, 1);
+            // enmascarar todo excepto IRQ1 en maestro; esclavo enmascarado
+            pic.write_io(0x21, 0xFD, 1);
+            pic.write_io(0xA1, 0xFF, 1);
+            break;
+        }
+    }
+    vm3.load_code(GuestAddress::new(0), &[0xF4])?; // hlt
+    vm3.set_rip(0);
+    vm3.inject_ps2_scancodes(&[0x1F]);
+    let _ = vm3.run_steps(1);
+    let mut got_irq1 = false;
+    for dev in &mut vm3.devices {
+        if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
+            for _ in 0..8 {
+                match pic.get_interrupt() {
+                    Some(0x21) => {
+                        got_irq1 = true;
+                        break;
+                    }
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+            break;
+        }
+    }
+    assert!(got_irq1, "PIC: se esperaba IRQ1 (vector 0x21) por scancode de teclado pendiente");
+
+    // IRQ12: ratón pendiente (paquete tras habilitar streaming y drenar ACK)
+    let mut vm4 = VirtualMachine::new(VmConfig {
+        name: "InputIrq12TestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    })?;
+    for dev in &mut vm4.devices {
+        if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
+            pic.write_io(0x20, 0x11, 1);
+            pic.write_io(0xA0, 0x11, 1);
+            pic.write_io(0x21, 0x20, 1);
+            pic.write_io(0xA1, 0x28, 1);
+            pic.write_io(0x21, 0x04, 1);
+            pic.write_io(0xA1, 0x02, 1);
+            pic.write_io(0x21, 0x01, 1);
+            pic.write_io(0xA1, 0x01, 1);
+            // desenmascarar IRQ2 (cascada) en maestro e IRQ12 en esclavo
+            pic.write_io(0x21, 0xFB, 1);
+            pic.write_io(0xA1, 0xEF, 1);
+            break;
+        }
+    }
+    let enable_mouse_and_read_ack = [
+        0xB0, 0xD4, 0xE6, 0x64, // out 64, D4
+        0xB0, 0xF4, 0xE6, 0x60, // out 60, F4
+        0xE4, 0x60,             // in al, 0x60 (consume ACK)
+        0xBB, 0x20, 0x03, 0x00, 0x00, // mov ebx, 0x0320
+        0x88, 0x03,             // mov [ebx], al
+        0xF4,
+    ];
+    vm4.load_code(GuestAddress::new(0), &enable_mouse_and_read_ack)?;
+    vm4.set_rip(0);
+    let _ = vm4.run()?;
+    let mut ackb = [0u8; 1];
+    vm4.memory.read_bytes(GuestAddress::new(0x0320), &mut ackb)?;
+    assert_eq!(ackb[0], 0xFA, "PS/2 mouse: se esperaba ACK 0xFA al habilitar reporting");
+
+    vm4.load_code(GuestAddress::new(0), &[0xF4])?;
+    vm4.set_rip(0);
+    vm4.inject_ps2_mouse_event(2, 0, 0, 0);
+    let _ = vm4.run_steps(1);
+    let mut got_irq12 = false;
+    for dev in &mut vm4.devices {
+        if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
+            for _ in 0..8 {
+                match pic.get_interrupt() {
+                    Some(0x2C) => {
+                        got_irq12 = true;
+                        break;
+                    }
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+            break;
+        }
+    }
+    assert!(got_irq12, "PIC: se esperaba IRQ12 (vector 0x2C) por paquete de ratón pendiente");
+    println!("  [OK] IRQ1/IRQ12 reflejadas al PIC (sondeo tick_platform) y vectores 0x21/0x2C");
+
+    println!("--------------------------------------------------");
+    println!("  Entrada PS/2 M10 (i8042, teclado/raton, IRQ1/12): EXITO");
+    println!("  Nota: IRQs reflejadas a PIC por sondeo; sin inyeccion de IRQ en CPU (IDT/CLI/STI/IRET).");
+    println!("  En GUI: eventos Win32 (WM_KEY*/WM_MOUSE*) -> scancodes/paquetes PS/2 guest.");
+    println!("==================================================");
+    Ok(())
+}
+
 fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("   Prueba de Plataforma Virtual (Hito M7)       ");
@@ -1104,6 +1303,9 @@ struct GuiState {
     fb_h: u32,
     info: &'static HostInfo,
     status: String,
+    mouse_captured: bool,
+    mouse_buttons: u8, // PS/2: bit0 left, bit1 right, bit2 middle
+    ignore_next_mouse_move: bool,
 }
 
 unsafe fn draw_diagnostics(hdc: HDC, rect: &RECT, info: &HostInfo, status: &str) {
@@ -1213,12 +1415,12 @@ unsafe fn draw_diagnostics(hdc: HDC, rect: &RECT, info: &HostInfo, status: &str)
     draw_text_line(hdc, info.whpx.description(), 48, current_y, rect.right - 48, 22, DT_LEFT);
     current_y += 34;
 
-    current_y = draw_card_header(hdc, "Capsule Runtime (M0-M9)", 32, current_y, rect.right - 32, subtitle_font);
+    current_y = draw_card_header(hdc, "Capsule Runtime (M0-M10)", 32, current_y, rect.right - 32, subtitle_font);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, rgb(74, 222, 128));
     draw_text_line(
         hdc,
-        "OK - UART, boot, ATA/IDE, COW, plataforma, NAT/virtio-net y framebuffer VGA/Bochs VBE",
+        "OK - UART, boot, ATA/IDE, COW, plataforma, NAT/virtio-net, framebuffer VBE y PS/2",
         48,
         current_y,
         rect.right - 48,
@@ -1235,7 +1437,7 @@ unsafe fn draw_diagnostics(hdc: HDC, rect: &RECT, info: &HostInfo, status: &str)
     SelectObject(hdc, code_font);
     draw_text_line(
         hdc,
-        "Siguiente paso: inyeccion de IRQ en CPU (IDT/CLI/STI/IRET), M12 (firmware/boot real)",
+        "Siguiente paso: inyeccion de IRQ en CPU (IDT/CLI/STI/IRET), M11/M12 (WHPX/firmware)",
         48,
         current_y,
         rect.right - 48,
@@ -1314,6 +1516,162 @@ fn load_vbe_demo_guest(vm: &mut VirtualMachine) -> Result<(), Box<dyn std::error
     vm.load_code(GuestAddress::new(0), &code)?;
     vm.set_rip(0);
     Ok(())
+}
+
+unsafe fn gui_client_to_screen(hwnd: HWND, point: &mut windows_sys::Win32::Foundation::POINT) -> i32 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn ClientToScreen(hWnd: HWND, lpPoint: *mut windows_sys::Win32::Foundation::POINT) -> i32;
+    }
+    ClientToScreen(hwnd, point)
+}
+
+unsafe fn gui_enable_mouse_capture(hwnd: HWND, state: &mut GuiState) {
+    if state.mouse_captured {
+        return;
+    }
+    state.mouse_captured = true;
+    state.ignore_next_mouse_move = true;
+    SetCapture(hwnd);
+    ShowCursor(0); // decrement; hide while captured
+    let mut rc: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut rc);
+    let mut center = windows_sys::Win32::Foundation::POINT {
+        x: (rc.right - rc.left) / 2,
+        y: (rc.bottom - rc.top) / 2,
+    };
+    gui_client_to_screen(hwnd, &mut center);
+    SetCursorPos(center.x, center.y);
+}
+
+unsafe fn gui_disable_mouse_capture(state: &mut GuiState) {
+    if !state.mouse_captured {
+        return;
+    }
+    state.mouse_captured = false;
+    state.ignore_next_mouse_move = false;
+    ReleaseCapture();
+    ShowCursor(1);
+}
+
+fn vk_to_ps2_set1_scancode(vk: usize, extended: bool) -> Option<&'static [u8]> {
+    let vk = vk as u16;
+    // Mapeo básico VK -> PS/2 Set 1 (make). Extendidas según lParam bit 24.
+    Some(match vk {
+        0x1B => &[0x01], // Esc
+        0x31 => &[0x02],
+        0x32 => &[0x03],
+        0x33 => &[0x04],
+        0x34 => &[0x05],
+        0x35 => &[0x06],
+        0x36 => &[0x07],
+        0x37 => &[0x08],
+        0x38 => &[0x09],
+        0x39 => &[0x0A],
+        0x30 => &[0x0B],
+        0xBD => &[0x0C], // -
+        0xBB => &[0x0D], // =
+        0x08 => &[0x0E], // backspace
+        0x09 => &[0x0F], // tab
+        0x51 => &[0x10],
+        0x57 => &[0x11],
+        0x45 => &[0x12],
+        0x52 => &[0x13],
+        0x54 => &[0x14],
+        0x59 => &[0x15],
+        0x55 => &[0x16],
+        0x49 => &[0x17],
+        0x4F => &[0x18],
+        0x50 => &[0x19],
+        0xDB => &[0x1A], // [
+        0xDD => &[0x1B], // ]
+        0x0D if extended => &[0xE0, 0x1C], // numpad enter
+        0x0D => &[0x1C], // enter
+        0x11 if extended => &[0xE0, 0x1D], // right ctrl
+        0x11 => &[0x1D], // ctrl
+        0x41 => &[0x1E],
+        0x53 => &[0x1F],
+        0x44 => &[0x20],
+        0x46 => &[0x21],
+        0x47 => &[0x22],
+        0x48 => &[0x23],
+        0x4A => &[0x24],
+        0x4B => &[0x25],
+        0x4C => &[0x26],
+        0xBA => &[0x27], // ;
+        0xDE => &[0x28], // '
+        0xC0 => &[0x29], // `
+        0x10 => &[0x2A], // shift (left/right indistinguible sin lparam flags completas)
+        0xDC => &[0x2B], // \
+        0x5A => &[0x2C],
+        0x58 => &[0x2D],
+        0x43 => &[0x2E],
+        0x56 => &[0x2F],
+        0x42 => &[0x30],
+        0x4E => &[0x31],
+        0x4D => &[0x32],
+        0xBC => &[0x33], // ,
+        0xBE => &[0x34], // .
+        0xBF => &[0x35], // /
+        0x12 if extended => &[0xE0, 0x38], // right alt
+        0x12 => &[0x38], // alt
+        0x20 => &[0x39], // space
+        0x14 => &[0x3A], // caps lock
+        0x70 => &[0x3B],
+        0x71 => &[0x3C],
+        0x72 => &[0x3D],
+        0x73 => &[0x3E],
+        0x74 => &[0x3F],
+        0x75 => &[0x40],
+        0x76 => &[0x41],
+        0x77 => &[0x42],
+        0x78 => &[0x43],
+        0x79 => &[0x44],
+        0x7A => &[0x57], // F11
+        0x7B => &[0x58], // F12
+        0x90 => &[0x45], // num lock
+        0x91 => &[0x46], // scroll lock
+        0x24 if extended => &[0xE0, 0x47], // home
+        0x26 if extended => &[0xE0, 0x48], // up
+        0x21 if extended => &[0xE0, 0x49], // page up
+        0x25 if extended => &[0xE0, 0x4B], // left
+        0x27 if extended => &[0xE0, 0x4D], // right
+        0x23 if extended => &[0xE0, 0x4F], // end
+        0x28 if extended => &[0xE0, 0x50], // down
+        0x22 if extended => &[0xE0, 0x51], // page down
+        0x2D if extended => &[0xE0, 0x52], // insert
+        0x2E if extended => &[0xE0, 0x53], // delete
+        0x5B if extended => &[0xE0, 0x5B], // left win
+        0x5C if extended => &[0xE0, 0x5C], // right win
+        0x5D if extended => &[0xE0, 0x5D], // apps
+        // numpad (no extended)
+        0x6D => &[0x4A], // -
+        0x6B => &[0x4E], // +
+        0x6F => &[0xE0, 0x35], // numpad / (extended in PS/2 set1)
+        0x6A => &[0x37], // *
+        0x67 => &[0x47],
+        0x68 => &[0x48],
+        0x69 => &[0x49],
+        0x64 => &[0x4B],
+        0x65 => &[0x4C],
+        0x66 => &[0x4D],
+        0x61 => &[0x4F],
+        0x62 => &[0x50],
+        0x63 => &[0x51],
+        0x60 => &[0x52],
+        0x6E => &[0x53],
+        _ => return None,
+    })
+}
+
+fn scancode_to_break(code: &[u8]) -> Vec<u8> {
+    if code.len() == 2 && code[0] == 0xE0 {
+        vec![0xE0, code[1] | 0x80]
+    } else if code.len() == 1 {
+        vec![code[0] | 0x80]
+    } else {
+        Vec::new()
+    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -1426,9 +1784,14 @@ unsafe extern "system" fn window_proc(
                     let font = create_gdi_font(14, 400);
                     SelectObject(hdc, font);
                     SetTextColor(hdc, rgb(200, 210, 220));
+                    let cap = if state.mouse_captured {
+                        "Raton capturado (Ctrl+Esc libera)"
+                    } else {
+                        "Clic para capturar raton"
+                    };
                     let status = format!(
-                        "M9 Framebuffer VGA/Bochs VBE: {}x{}x32 LFB activo  |  VM: {:?}  |  [Esc] salir",
-                        state.fb_w, state.fb_h, state.vm.status
+                        "M10 VBE {}x{}x32 | VM: {:?} | {} | [Esc] salir",
+                        state.fb_w, state.fb_h, state.vm.status, cap
                     );
                     let mut text_rect = bar_rect;
                     text_rect.left += 8;
@@ -1450,13 +1813,160 @@ unsafe extern "system" fn window_proc(
             EndPaint(hwnd, &ps);
             0
         }
-        WM_KEYDOWN => {
-            if wparam == 0x1B {
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                let ctrl = (GetAsyncKeyStateLocal(0x11) as u16 & 0x8000) != 0;
+                if ctrl && wparam == 0x1B {
+                    gui_disable_mouse_capture(state);
+                    return 0;
+                }
+                if !state.mouse_captured && wparam == 0x1B {
+                    DestroyWindow(hwnd);
+                    return 0;
+                }
+                let repeat = (lparam as u32 & (1 << 30)) != 0;
+                if !repeat {
+                    let extended = (lparam as u32 & (1 << 24)) != 0;
+                    if let Some(make) = vk_to_ps2_set1_scancode(wparam, extended) {
+                        state.vm.inject_ps2_scancodes(make);
+                    }
+                }
+            } else if wparam == 0x1B {
                 DestroyWindow(hwnd);
             }
             0
         }
+        WM_KEYUP | WM_SYSKEYUP => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                let extended = (lparam as u32 & (1 << 24)) != 0;
+                if let Some(make) = vk_to_ps2_set1_scancode(wparam, extended) {
+                    let brk = scancode_to_break(make);
+                    if !brk.is_empty() {
+                        state.vm.inject_ps2_scancodes(&brk);
+                    }
+                }
+            }
+            0
+        }
+        WM_KILLFOCUS => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                gui_disable_mouse_capture(state);
+                state.mouse_buttons = 0;
+            }
+            0
+        }
+        WM_LBUTTONDOWN => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if !state.mouse_captured {
+                    gui_enable_mouse_capture(hwnd, state);
+                }
+                state.mouse_buttons |= 0x01;
+                state.vm.inject_ps2_mouse_event(0, 0, state.mouse_buttons, 0);
+                state.vm.inject_ps2_mouse_button_packet();
+            }
+            0
+        }
+        WM_LBUTTONUP => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                state.mouse_buttons &= !0x01;
+                state.vm.inject_ps2_mouse_event(0, 0, state.mouse_buttons, 0);
+                state.vm.inject_ps2_mouse_button_packet();
+            }
+            0
+        }
+        WM_RBUTTONDOWN => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if !state.mouse_captured {
+                    gui_enable_mouse_capture(hwnd, state);
+                }
+                state.mouse_buttons |= 0x02;
+                state.vm.inject_ps2_mouse_event(0, 0, state.mouse_buttons, 0);
+                state.vm.inject_ps2_mouse_button_packet();
+            }
+            0
+        }
+        WM_RBUTTONUP => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                state.mouse_buttons &= !0x02;
+                state.vm.inject_ps2_mouse_event(0, 0, state.mouse_buttons, 0);
+                state.vm.inject_ps2_mouse_button_packet();
+            }
+            0
+        }
+        WM_MBUTTONDOWN => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if !state.mouse_captured {
+                    gui_enable_mouse_capture(hwnd, state);
+                }
+                state.mouse_buttons |= 0x04;
+                state.vm.inject_ps2_mouse_event(0, 0, state.mouse_buttons, 0);
+                state.vm.inject_ps2_mouse_button_packet();
+            }
+            0
+        }
+        WM_MBUTTONUP => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                state.mouse_buttons &= !0x04;
+                state.vm.inject_ps2_mouse_event(0, 0, state.mouse_buttons, 0);
+                state.vm.inject_ps2_mouse_button_packet();
+            }
+            0
+        }
+        WM_MOUSEMOVE => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if state.mouse_captured {
+                    if state.ignore_next_mouse_move {
+                        state.ignore_next_mouse_move = false;
+                        return 0;
+                    }
+                    let mut rc: RECT = std::mem::zeroed();
+                    GetClientRect(hwnd, &mut rc);
+                    let center_client = windows_sys::Win32::Foundation::POINT {
+                        x: (rc.right - rc.left) / 2,
+                        y: (rc.bottom - rc.top) / 2,
+                    };
+                    let mut screen_center = center_client;
+                    gui_client_to_screen(hwnd, &mut screen_center);
+                    let mut cur = windows_sys::Win32::Foundation::POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut cur);
+                    let dx = cur.x - screen_center.x;
+                    let dy = cur.y - screen_center.y;
+                    if dx != 0 || dy != 0 {
+                        state
+                            .vm
+                            .inject_ps2_mouse_event(dx, dy, state.mouse_buttons, 0);
+                        state.ignore_next_mouse_move = true;
+                        SetCursorPos(screen_center.x, screen_center.y);
+                    }
+                }
+            }
+            0
+        }
         WM_CLOSE => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                gui_disable_mouse_capture(&mut *ptr);
+            }
             DestroyWindow(hwnd);
             0
         }
@@ -1464,6 +1974,7 @@ unsafe extern "system" fn window_proc(
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
             if !ptr.is_null() {
                 KillTimer(hwnd, GUI_TIMER_ID);
+                gui_disable_mouse_capture(&mut *ptr);
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 drop(Box::from_raw(ptr));
             }
@@ -1472,6 +1983,14 @@ unsafe extern "system" fn window_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+fn GetAsyncKeyStateLocal(vk: i32) -> i16 {
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetAsyncKeyState(vKey: i32) -> i16;
+    }
+    unsafe { GetAsyncKeyState(vk) }
 }
 
 unsafe fn create_gdi_font(height: i32, weight: i32) -> HFONT {
@@ -1639,6 +2158,14 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|arg| arg == "test-input" || arg == "--test-input") {
+        if let Err(e) = run_test_input() {
+            eprintln!("Error en test-input: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let host_info = get_host_info();
     print_cli_summary(host_info);
 
@@ -1655,8 +2182,8 @@ fn main() {
     };
 
     let status = match load_vbe_demo_guest(&mut vm) {
-        Ok(()) => "Demo guest M9 cargado: programando VBE 320x200x32 y dibujando en LFB...".to_string(),
-        Err(e) => format!("No se pudo cargar demo VBE: {} (mostrando diagnostico)", e),
+        Ok(()) => "Demo guest M10: VBE + entrada PS/2 (clic para capturar raton, Ctrl+Esc para liberar).".to_string(),
+        Err(e) => format!("No se pudo cargar demo VBE/PS2: {} (mostrando diagnostico)", e),
     };
 
     let state = Box::new(GuiState {
@@ -1666,13 +2193,16 @@ fn main() {
         fb_h: 0,
         info: host_info,
         status,
+        mouse_captured: false,
+        mouse_buttons: 0,
+        ignore_next_mouse_move: false,
     });
     let state_ptr = Box::into_raw(state);
 
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name: Vec<u16> = "CapsuleOS_HostWindow\0".encode_utf16().collect();
-        let window_title: Vec<u16> = "CapsuleOS - Framebuffer Runtime (M9)\0"
+        let window_title: Vec<u16> = "CapsuleOS - Framebuffer Runtime (M10)\0"
             .encode_utf16()
             .collect();
 

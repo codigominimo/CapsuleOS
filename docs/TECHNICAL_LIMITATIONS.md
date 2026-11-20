@@ -34,12 +34,8 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Fallback a Emulador**: Para garantizar que CapsuleOS funcione en cualquier ordenador (incluyendo máquinas virtuales anidadas que no soporten virtualización anidada), CapsuleOS integrará un backend emulador de CPU x86-64 por software.
 
 ### 2.2. Rendimiento de la Emulación por Software
-* **Limitación**: Un intérprete de instrucciones x86_64 en modo software es órdenes de magnitud más lento que la virtualización por hardware nativa.
-* **Objetivo de uso**: La emulación por software está destinada a sistemas minimalistas (kernels embebidos, pruebas, NanoOS o Linux mínimo de recuperación) y no para sistemas de escritorio pesados con entornos gráficos complejos hasta no disponer de un motor de traducción binaria dinámica (JIT).
-
-### 2.3. Plataforma/IRQ en la CPU software (estado M7-M9)
-* **Limitación**: El backend de CPU software actual no implementa entrega de interrupciones arquitecturales (IDT/CLI/STI/IRET/APIC). Aunque el PIC/PIT/RTC/PCI/IDE reflejan IRQs y condiciones pendientes (p. ej. PIT IRQ0, IDE IRQ14, INTx PCI/IRQ11), la VM procesa dispositivos por sondeo (polling) en cada tick/iteración.
-* **Impacto**: Guests que dependan estrictamente de interrupciones temporizadas o de notificación asíncrona por IRQ pueden no funcionar correctamente hasta que se implemente inyección/entrega de interrupciones en la vCPU. Esto también aplica a señales de video (p. ej. VBlank) no disponibles en M9.
+* **Limitación**: El backend de CPU software actual no implementa entrega de interrupciones arquitecturales (IDT/CLI/STI/IRET/APIC). Aunque el PIC/PIT/RTC/PCI/IDE/PS/2 reflejan IRQs y condiciones pendientes (p. ej. PIT IRQ0, teclado IRQ1, INTx PCI/IRQ11, ratón IRQ12, IDE IRQ14), la VM procesa dispositivos por sondeo (polling) en cada tick/iteración y refresca líneas de IRQ hacia el PIC.
+* **Impacto**: Guests que dependan estrictamente de interrupciones temporizadas o de notificación asíncrona por IRQ pueden no funcionar correctamente hasta que se implemente inyección/entrega de interrupciones en la vCPU. Esto también aplica a señales de video (p. ej. VBlank) no disponibles y a entrada dependiente de IRQs reales (p. ej. drivers que no sondeen puertos PS/2/PIC).
 
 ---
 
@@ -55,3 +51,8 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Limitaciones actuales**: LFB modelado en RAM guest (no BAR MMIO dedicado de dispositivo PCI/VGA) para encajar en el modelo actual sin MMIO; sin VBlank/IRQ ni sincronización avanzada; compatibilidad VBE/parcial orientada a validación inicial; sin aceleración 2D/3D ni `virtio-gpu`.
 * **Impacto**: Guests gráficos reales pueden requerir mayor fidelidad VBE/VGA, MMIO y temporización/IRQ para funcionar correctamente.
 * **Solución**: Evolucionar a adaptador de framebuffer con MMIO/BAR adecuado, sincronización eficiente y ruta de presentación optimizada (DIBSection/Direct3D 11) para estabilidad y rendimiento.
+
+### 3.3. Entrada PS/2 i8042 (M10: implementación inicial teclado/ratón)
+* **Estado M10**: Se implementa `I8042Ps2Controller` (0x60/0x64) con cola de salida, comandos básicos de controlador/dispositivos, teclado PS/2 (scancodes Set 1) y ratón PS/2 (modo stream, paquetes de 3 bytes). La GUI Win32 traduce eventos de teclado/ratón a inyecciones PS/2 en la VM; IRQ1/IRQ12 se reflejan al PIC por sondeo.
+* **Limitaciones actuales**: sin inyección de IRQ en CPU (IDT/CLI/STI/IRET/APIC), por lo que drivers guest dependientes de interrupciones reales pueden no funcionar; mapeo de teclado parcial (sin layouts/IME completos, sin todas las teclas extendidas), sin rueda ni botones extendidos, captura de ratón básica y sin dispositivos USB/HID/touch.
+* **Impacto**: Adecuado para validación y guests/bootloaders que sondeen puertos PS/2; compatibilidad limitada con sistemas que requieran mayor fidelidad de input o IRQs hardware entregadas por CPU.

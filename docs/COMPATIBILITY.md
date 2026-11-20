@@ -20,18 +20,18 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 
 ## 2. Matriz de Sistemas Invitados (Guest OS)
 
-| Sistema Operativo | Arquitectura | Modo Arranque | Backend Emulador | Backend WHPX | Consola (TTY) | Gráficos (GUI) | Persistencia | Estado |
-|---|---|---|---|---|---|---|---|---|
-| **Minimal Test Guest (synthetic)** | x86-64 | Direct (M1/M9 tests) | Planeado | Planeado | Verificado (UART 16550/COM1 por sondeo) | Verificado (VBE LFB 320x200x32, `test-framebuffer`, render Win32 por sondeo) | N/A | En desarrollo (tests internos) |
-| **Linux Minimal (BusyBox / initramfs)** | x86-64 | Direct Boot (bzImage) | Planeado | Planeado | Planeado (base UART/earlyprintk) | N/A | Planeado | Planeado |
-| **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
-| **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado |
-| **Ubuntu Desktop** | x86-64 | UEFI | No (lento) | Planeado | Planeado | Planeado | Planeado | Planeado |
-| **Debian GNU/Linux** | x86-64 | BIOS / UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
-| **Fedora Linux** | x86-64 | UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
-| **Windows PE** | x86-64 | UEFI | No | Planeado | Planeado | Planeado | Planeado | Planeado |
-| **Windows 10 / 11** | x86-64 | UEFI + TPM2 | No | Planeado | Planeado | Planeado | Planeado | Planeado |
-| **FreeBSD** | x86-64 | BIOS / UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| Sistema Operativo | Arquitectura | Modo Arranque | Backend Emulador | Backend WHPX | Consola (TTY) | Gráficos (GUI) | Entrada (PS/2) | Persistencia | Estado |
+|---|---|---|---|---|---|---|---|---|---|
+| **Minimal Test Guest (synthetic)** | x86-64 | Direct (M1/M10 tests) | Planeado | Planeado | Verificado (UART 16550/COM1 por sondeo) | Verificado (VBE LFB 320x200x32, `test-framebuffer`, render Win32 por sondeo) | Verificado (i8042 teclado/ratón, IRQ1/IRQ12 por sondeo, `test-input`; GUI Win32→PS/2) | N/A | En desarrollo (tests internos) |
+| **Linux Minimal (BusyBox / initramfs)** | x86-64 | Direct Boot (bzImage) | Planeado | Planeado | Planeado (base UART/earlyprintk) | N/A | Planeado | Planeado | Planeado |
+| **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado | Planeado |
+| **Ubuntu Desktop** | x86-64 | UEFI | No (lento) | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **Debian GNU/Linux** | x86-64 | BIOS / UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **Fedora Linux** | x86-64 | UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **Windows PE** | x86-64 | UEFI | No | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **Windows 10 / 11** | x86-64 | UEFI + TPM2 | No | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **FreeBSD** | x86-64 | BIOS / UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 
 ---
 
@@ -48,12 +48,13 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 
 ---
 
-## 4. Plataforma Virtual, Red y Grǭficos (M7-M9)
+## 4. Plataforma Virtual, Red, Gráficos y Entrada (M7-M10)
 
 | Componente | Capacidad verificada (tests CLI/unitarios, backend software) | Limitaciones actuales |
 |---|---|---|
-| **PIC 8259 / PIT 8254 / RTC-CMOS** | Inicialización, IMR/IRQ0 PIT, hora/fecha básica y tick simplificado (`test-platform`) | Sin inyección de IRQ en CPU (IDT/CLI/STI/IRET); modelo temporal simplificado |
+| **PIC 8259 / PIT 8254 / RTC-CMOS** | Inicialización, IMR/IRQ0 PIT, hora/fecha básica y tick simplificado (`test-platform`) | Sin inyección de IRQ en CPU (IDT/CLI/STI/IRET/APIC); modelo temporal simplificado |
 | **PCI (mecanismo #1)** | Enumeración/config I/O `0xCF8/0xCFC`, BAR I/O y dispositivo virtio-net en `00:03.0` | Sin MMIO; INTx agregada cableada a IRQ11 por sondeo |
 | **Virtio-net transitional (legacy I/O)** | Virtqueues RX/TX en memoria guest y procesamiento por polling desde la VM (`test-network`) | Sin MMIO/transporte moderno, sin features/offloads avanzados |
 | **User-mode NAT** | ARP, DHCP básico, ICMP echo (gateway/DNS virtual), UDP saliente con respuesta (flujo limitado) (`test-network`) | Sin TCP, sin multi-flow/conexiones concurrentes completas, sin DNS real completo, sin drivers host |
 | **VGA/Bochs VBE + LFB (M9)** | Programación DISPI por I/O (`0x01CE/0x01CF`), modo 320x200x32 con LFB en RAM guest (`0x0040_0000`), escritura guest y blit host BGRA32 en ventana Win32 (`test-framebuffer`) | LFB en RAM guest (sin MMIO/BAR dedicado), sin VBlank/IRQ, sin aceleración 2D/3D, compatibilidad VBE parcial |
+| **PS/2 i8042 teclado/ratón (M10)** | Puertos `0x60/0x64`, scancodes Set 1 y paquetes de ratón (3 bytes) leíbles por guest, IRQ1/IRQ12 reflejadas al PIC (vectores 0x21/0x2C) por sondeo (`test-input`); GUI Win32 traduce eventos a entrada PS/2 | Sin inyección de IRQ en CPU, mapeo de teclado parcial (sin layout completo/IME), sin rueda/botones extendidos ni USB/HID, captura de ratón básica |

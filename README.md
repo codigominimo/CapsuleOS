@@ -139,6 +139,13 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Comando CLI de validación: `capsule.exe test-framebuffer`.
   - Limitaciones: LFB en RAM guest (no BAR MMIO dedicado), sin inyección de IRQ en CPU (IDT/CLI/STI/IRET), backend de render por sondeo/timer.
 
+
+* [x] **Hito M10 - GUI Input & PS/2 (i8042)**:
+  - Controlador PS/2 i8042 (`0x60/0x64`) en `capsule-devices` con teclado (scancodes Set 1) y ratón PS/2 (modo stream, paquetes de 3 bytes), integrado en la VM y expuesto mediante APIs de inyección desde `capsule-vmm`.
+  - IRQ1 (teclado) e IRQ12 (ratón) reflejadas al PIC 8259 por sondeo en `tick_platform` según datos pendientes/command byte (sin inyección de interrupciones en la CPU software).
+  - `capsule-gui` captura eventos Win32 (`WM_KEYDOWN/UP`, `WM_SYSKEY*`, `WM_MOUSEMOVE`, `WM_*BUTTON*`, foco) y los traduce a scancodes/paquetes PS/2; captura/liberación de ratón en ventana (clic para capturar, Ctrl+Esc para liberar).
+  - Comando CLI de validación: `capsule.exe test-input`.
+  - Limitaciones: sin inyección de IRQ en CPU (IDT/CLI/STI/IRET/APIC), mapeo de teclado parcial (Set 1, sin layout completo/IME), sin rueda/botones extendidos ni USB/HID, captura de ratón básica.
 ---
 
 ## Compilación y Uso
@@ -220,10 +227,17 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 
 
 ### Verificar framebuffer VGA/Bochs VBE y blit Win32 (Hito M9)
-`powershell
+```powershell
 # Programa VBE por puertos I/O, escribe en LFB guest (0x0040_0000) y valida copia BGRA32 para render
 .\target\release\capsule.exe test-framebuffer
-`
+```
+
+### Verificar entrada PS/2 i8042 (teclado/ratón, Hito M10)
+```powershell
+# Valida scancodes por 0x64/0x60, secuencia D4/F4+ACK+paquete de ratón e IRQ1/IRQ12 reflejadas al PIC (vectores 0x21/0x2C) por sondeo
+.\target\release\capsule.exe test-input
+```
+
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell
 cargo test --workspace

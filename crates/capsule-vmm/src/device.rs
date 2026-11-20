@@ -1,6 +1,6 @@
 //! Abstracción de dispositivos virtuales (I/O ports).
 
-use capsule_devices::{BochsVbe, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
+use capsule_devices::{BochsVbe, I8042Ps2Controller, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
 use std::any::Any;
 
 pub trait VirtualDevice: Send + Any {
@@ -205,6 +205,33 @@ impl VirtualDevice for BochsVbe {
 
     fn write_io(&mut self, port: u16, data: u32, size: u8) {
         BochsVbe::write_io(self, port, data, size);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Implementacion del trait VirtualDevice para el controlador PS/2 i8042 (teclado/raton, 0x60/0x64).
+impl VirtualDevice for I8042Ps2Controller {
+    fn name(&self) -> &str {
+        "I8042_PS2"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        I8042Ps2Controller::handles_port(self, port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        I8042Ps2Controller::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        I8042Ps2Controller::write_io(self, port, data, size);
     }
 
     fn as_any(&self) -> &dyn Any {

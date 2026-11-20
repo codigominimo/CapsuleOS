@@ -8,7 +8,8 @@ use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
 use capsule_devices::{
-    BochsVbe, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550, VirtioNetPci, COM1_BASE,
+    BochsVbe, I8042Ps2Controller, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550,
+    VirtioNetPci, COM1_BASE,
 };
 use capsule_memory::GuestMemory;
 use capsule_storage::BlockDevice;
@@ -24,8 +25,8 @@ pub struct VirtualMachine {
 impl VirtualMachine {
     /// Inicializa una nueva máquina virtual con la configuración dada.
     /// Registra dispositivos de plataforma basicos: COM1 (UART 16550), PIC 8259, PIT 8254,
-    /// RTC/CMOS, Bochs VBE (framebuffer, M9), un bus PCI (config mechanism #1) y una NIC
-    /// virtio-net transitional con backend NAT en modo usuario (M8).
+    /// RTC/CMOS, controlador PS/2 i8042 (teclado/raton), Bochs VBE (framebuffer, M9),
+    /// un bus PCI (config mechanism #1) y una NIC virtio-net transitional con backend NAT (M8).
     pub fn new(config: VmConfig) -> Result<Self, VmmError> {
         let mem_size = config.memory_size.as_bytes() as usize;
         let memory = GuestMemory::new(mem_size).map_err(|e| {
@@ -46,6 +47,7 @@ impl VirtualMachine {
         vm.add_device(Box::new(Pic8259::new()));
         vm.add_device(Box::new(Pit8254::new()));
         vm.add_device(Box::new(RtcCmos::new()));
+        vm.add_device(Box::new(I8042Ps2Controller::new()));
         vm.add_device(Box::new(BochsVbe::new()));
 
         let mut pci = PciBus::new();
@@ -187,16 +189,24 @@ impl VirtualMachine {
 
         // Cableado de IRQs de plataforma hacia PIC 8259.
         // - IRQ0 : PIT (pulso en flanco aproximado por tick)
+        // - IRQ1 : Teclado PS/2 i8042 (nivel mientras haya scancodes pendientes)
         // - IRQ11: PCI INTx agregada (virtio-net, nivel mientras ISR pendiente)
+        // - IRQ12: Ratón PS/2 i8042 (nivel mientras haya paquetes pendientes)
         // - IRQ14: IDE primario (nivel mientras irq_pending && !nIEN)
         let mut ide_irq14 = false;
         let mut pci_irq11 = false;
+        let mut kbd_irq1 = false;
+        let mut mouse_irq12 = false;
         for dev in &mut self.devices {
             if let Some(ide) = dev.as_any_mut().downcast_mut::<IdeController>() {
                 ide_irq14 = ide.irq_pending();
             }
             if let Some(pci) = dev.as_any_mut().downcast_mut::<PciBus>() {
                 pci_irq11 = pci.any_irq_level();
+            }
+            if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
+                kbd_irq1 = ps2.keyboard_irq_pending();
+                mouse_irq12 = ps2.mouse_irq_pending();
             }
         }
 
@@ -205,7 +215,9 @@ impl VirtualMachine {
                 if pit_irq0 {
                     pic.raise_irq(0);
                 }
+                pic.set_irq_level(1, kbd_irq1);
                 pic.set_irq_level(11, pci_irq11);
+                pic.set_irq_level(12, mouse_irq12);
                 pic.set_irq_level(14, ide_irq14);
                 break;
             }
@@ -377,6 +389,37 @@ impl VirtualMachine {
         Some((w, h))
     }
 
+    /// Encola scancodes PS/2 Set 1 (teclado) en el controlador i8042, si esta presente.
+    pub fn inject_ps2_scancodes(&mut self, scancodes: &[u8]) {
+        for dev in &mut self.devices {
+            if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
+                ps2.enqueue_scancodes(scancodes);
+                break;
+            }
+        }
+    }
+
+    /// Encola evento de raton PS/2 (movimiento relativo, botones, rueda) en el controlador i8042.
+    /// `buttons`: bit0=izq, bit1=der, bit2=medio.
+    pub fn inject_ps2_mouse_event(&mut self, dx: i32, dy: i32, buttons: u8, wheel: i32) {
+        for dev in &mut self.devices {
+            if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
+                ps2.enqueue_mouse_event(dx, dy, buttons, wheel);
+                break;
+            }
+        }
+    }
+
+    /// Encola un paquete PS/2 de raton sin movimiento (p.ej. cambio de botones).
+    pub fn inject_ps2_mouse_button_packet(&mut self) {
+        for dev in &mut self.devices {
+            if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
+                ps2.enqueue_mouse_button_packet();
+                break;
+            }
+        }
+    }
+
     /// Ejecuta el bucle principal de la vCPU hasta alcanzar una condición de salida (HALT, Error, etc.).
     /// El bucle avanza dispositivos de plataforma (PIT/RTC), sondea dispositivos PCI (virtqueues/NAT)
     /// con acceso a memoria guest y actualiza líneas IRQ básicas (PIC, IDE IRQ14, PCI INTx/IRQ11).
@@ -405,7 +448,7 @@ impl VirtualMachine {
                         }
                     }
 
-                    // La E/S puede cambiar estado de dispositivos (p.ej. PIC/IDE/PCI); refrescar.
+                    // La E/S puede cambiar estado de dispositivos (p.ej. PIC/IDE/PCI/PS2); refrescar.
                     self.tick_platform();
 
                     if !handled {

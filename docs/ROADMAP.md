@@ -18,7 +18,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M7** | **Virtual Platform Devices** | PIC 8259 (dual, maestro/esclavo), PIT 8254, RTC/CMOS MC146818 y bus PCI extensible (config 0xCF8/0xCFC) integrados en la VM; IRQ0 (PIT) e IRQ14 (IDE primario, nivel) cableadas al PIC; validación con `test-platform` y pruebas unitarias | **Completado** |
 | **M8** | **Networking (User-mode NAT)**| Virtio-net transitional PCI legacy (I/O BAR0, split virtqueues RX/TX) con NAT en modo usuario (ARP, DHCP básico, ICMP, UDP por sondeo) e IRQ INTx PCI agregada en PIC IRQ11; validación con `test-network` y pruebas | **Completado** |
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE (puertos DISPI) con LFB en RAM guest, renderizado en tiempo real en ventana Win32 (DIB/StretchDIBits) y validación `test-framebuffer` | **Completado** |
-| **M10**| **GUI Input & PS/2** | Integración de ratón y teclado desde eventos de ventana hacia controlador PS/2 guest | Pendiente |
+| **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratÃ³n, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyecciÃ³n de eventos Win32 desde GUI y validaciÃ³n `test-input` | **Completado** |
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform | Pendiente |
 | **M12**| **Firmware BIOS & UEFI** | Integración de SeaBIOS y OVMF para arranque estándar desde disco/ISO | Pendiente |
 | **M13**| **Ubuntu Minimal / Server** | Arranque verificado de distribución Ubuntu Server mediante WHPX | Pendiente |
@@ -59,3 +59,10 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - `capsule-gui` renderiza el framebuffer en tiempo real en ventana Win32 mediante DIB top-down 32bpp y `StretchDIBits`, ejecutando la VM por pasos en un timer de GUI; modo fallback a diagnósticos si no hay framebuffer activo.
 - Validación: `capsule.exe test-framebuffer` (programación VBE, escritura guest en LFB, verificación de píxeles y copia host BGRA32), `cargo test --workspace` y regresión CLI (`test-network`, `test-platform`, `test-cow`, `test-boot-disk`, `test-disk`, `test-storage`, `test-serial`, `test-boot`, `test-guest`).
 - Limitaciones: sin MMIO real para LFB/BAR, sin inyección de IRQ/VBlank en CPU (IDT/CLI/STI/IRET), render por sondeo, compatibilidad VBE/parcial orientada a validación inicial.
+
+### Hito M10 (completado)
+- `capsule-devices::I8042Ps2Controller` implementa puertos `0x60` (datos) y `0x64` (estado/comando) con cola de salida, comandos bÃ¡sicos de controlador (0x20/0x60/0xA7â€“0xAE/0xAA/0xAB/0xA9/0xD4), y emulaciÃ³n de teclado PS/2 (scancodes Set 1, ACK/reset/identificaciÃ³n bÃ¡sicos) y ratÃ³n PS/2 (modo stream, enable reporting, paquetes de 3 bytes con movimiento/botones y eje Y invertido respecto a pantalla).
+- `capsule-vmm` registra el controlador i8042 por defecto, refleja IRQ1 (teclado) e IRQ12 (ratÃ³n) al PIC 8259 en `tick_platform` segÃºn datos pendientes/command byte, refresca estado tras I/O a 0x60/0x64 y expone APIs `inject_ps2_scancodes`, `inject_ps2_mouse_event`, `inject_ps2_mouse_button_packet`.
+- `capsule-gui` captura eventos Win32 (`WM_KEYDOWN/UP`, `WM_SYSKEY*`, `WM_MOUSEMOVE`, `WM_L/R/MBUTTON*`, foco) y los traduce a scancodes Set 1/paquetes PS/2 hacia la VM; soporta captura de ratÃ³n en ventana (clic para capturar, Ctrl+Esc para liberar).
+- ValidaciÃ³n: `capsule.exe test-input` (lectura guest de scancode por 0x64/0x60, secuencia D4/F4 + ACK + paquete de ratÃ³n, y reflexiÃ³n de IRQ1/IRQ12 a vectores PIC 0x21/0x2C por sondeo), `cargo test --workspace` y regresiones CLI previas.
+- Limitaciones: sin inyecciÃ³n de interrupciones en CPU (IDT/CLI/STI/IRET/APIC), sin rueda/5Âº botÃ³n extendidos, mapeo de teclado parcial (Set 1, sin layout completo/IME), captura de ratÃ³n bÃ¡sica y sin dispositivos USB/HID.
