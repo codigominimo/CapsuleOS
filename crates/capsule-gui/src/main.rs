@@ -1,17 +1,18 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M8 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M9 completados)
 //!
-//! Punto de entrada de la aplicación `capsule.exe`.
+//! Punto de entrada de la aplicacion `capsule.exe`.
 //! Comandos CLI:
-//! - `capsule.exe test-guest`     : Verificación de la vCPU y máquina virtual elemental.
-//! - `capsule.exe test-boot`      : Verificación del protocolo Linux Direct Boot (bzImage + Zero Page).
-//! - `capsule.exe test-serial`    : Verificación del puerto serie UART 16550 (COM1 / earlyprintk).
-//! - `capsule.exe test-storage`   : Verificación de almacenamiento de bloques (RAW y VHD fixed).
-//! - `capsule.exe test-disk`      : Verificación de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
-//! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de imagen RAW/VHD fixed 512-byte.
-//! - `capsule.exe test-cow`       : Verificación de persistencia Copy-on-Write (overlay) sobre imagen base RAW/VHD.
-//! - `capsule.exe test-platform`  : Verificación de plataforma virtual (PIC 8259, PIT 8254, RTC/CMOS, PCI).
-//! - `capsule.exe test-network`   : Verificación de red en modo usuario (NAT) y virtio-net PCI (M8).
-//! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
+//! - `capsule.exe test-guest`       : Verificacion de la vCPU y maquina virtual elemental.
+//! - `capsule.exe test-boot`        : Verificacion del protocolo Linux Direct Boot (bzImage + Zero Page).
+//! - `capsule.exe test-serial`      : Verificacion del puerto serie UART 16550 (COM1 / earlyprintk).
+//! - `capsule.exe test-storage`     : Verificacion de almacenamiento de bloques (RAW y VHD fixed).
+//! - `capsule.exe test-disk`        : Verificacion de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
+//! - `capsule.exe test-boot-disk [path]` : Verificacion de arranque desde disco (self-test) o arranque de imagen RAW/VHD fixed 512-byte.
+//! - `capsule.exe test-cow`         : Verificacion de persistencia Copy-on-Write (overlay) sobre imagen base RAW/VHD.
+//! - `capsule.exe test-platform`    : Verificacion de plataforma virtual (PIC 8259, PIT 8254, RTC/CMOS, PCI).
+//! - `capsule.exe test-network`     : Verificacion de red en modo usuario (NAT) y virtio-net PCI (M8).
+//! - `capsule.exe test-framebuffer` : Verificacion de framebuffer VGA/Bochs VBE y LFB (M9).
+//! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
@@ -26,16 +27,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    SelectObject, SetBkMode, SetTextColor, UpdateWindow, DT_CENTER, DT_LEFT, DT_NOPREFIX, HDC,
-    HFONT, PAINTSTRUCT, TRANSPARENT,
+    InvalidateRect, SelectObject, SetBkMode, SetTextColor, StretchDIBits, UpdateWindow, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
+    DT_TOP,
+    HDC, HFONT, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetMessageW,
-    LoadCursorW, PostQuitMessage, RegisterClassW, ShowWindow, TranslateMessage, CS_HREDRAW,
-    CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, MSG, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_KEYDOWN,
-    WM_PAINT, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    GetWindowLongPtrW, KillTimer, LoadCursorW, PostQuitMessage, RegisterClassW,
+    SetTimer, SetWindowLongPtrW, ShowWindow, TranslateMessage, CREATESTRUCTW, CS_HREDRAW,
+    CS_VREDRAW, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG, SW_SHOW, WM_CLOSE, WM_CREATE,
+    WM_DESTROY, WM_KEYDOWN, WM_PAINT, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 static GLOBAL_HOST_INFO: OnceLock<HostInfo> = OnceLock::new();
@@ -700,6 +704,129 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+
+fn run_test_framebuffer() -> Result<(), Box<dyn std::error::Error>> {
+    use capsule_devices::vga::{
+        VBE_DISPI_INDEX_BPP, VBE_DISPI_INDEX_ENABLE, VBE_DISPI_INDEX_XRES, VBE_DISPI_INDEX_YRES,
+        VBE_DISPI_LFB_ENABLED, VBE_DISPI_LFB_PHYSICAL_ADDRESS,
+    };
+    use capsule_devices::{VBE_DISPI_IOPORT_DATA, VBE_DISPI_IOPORT_INDEX};
+
+    println!("==================================================");
+    println!("   Prueba de Framebuffer VGA/Bochs VBE (Hito M9)");
+    println!("==================================================");
+
+    let mut vm = VirtualMachine::new(VmConfig {
+        name: "FramebufferTestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(8),
+    })?;
+
+    // Guest: configura Bochs VBE 320x200x32 con LFB y escribe patron rojo en el framebuffer, luego HLT.
+    // Usa OUT DX,EAX (32-bit) para programar registros VBE de 16 bits (el dispositivo enmascara a 16 bits).
+    let mut code: Vec<u8> = Vec::new();
+    let vbe_index: u16 = VBE_DISPI_IOPORT_INDEX;
+    let vbe_data: u16 = VBE_DISPI_IOPORT_DATA;
+    let emit_out32 = |c: &mut Vec<u8>, port: u16, val: u32| {
+        // mov edx, port
+        c.push(0xBA);
+        c.extend_from_slice(&(port as u32).to_le_bytes());
+        // mov eax, val
+        c.push(0xB8);
+        c.extend_from_slice(&val.to_le_bytes());
+        // out dx, eax
+        c.push(0xEF);
+    };
+    let emit_vbe = |c: &mut Vec<u8>, idx: u16, val: u16| {
+        emit_out32(c, vbe_index, idx as u32);
+        emit_out32(c, vbe_data, val as u32);
+    };
+
+    emit_vbe(&mut code, VBE_DISPI_INDEX_XRES, 320);
+    emit_vbe(&mut code, VBE_DISPI_INDEX_YRES, 200);
+    emit_vbe(&mut code, VBE_DISPI_INDEX_BPP, 32);
+    emit_vbe(&mut code, VBE_DISPI_INDEX_ENABLE, 0x01 | VBE_DISPI_LFB_ENABLED);
+
+    // Rellenar 320*20 pixeles en LFB (0x00400000) con color 0x00FF0000 (B,G,R,X)
+    // mov edi, 0x00400000
+    code.extend_from_slice(&[0xBF, 0x00, 0x00, 0x40, 0x00]);
+    let count: u32 = 320 * 20;
+    // mov ecx, count
+    code.push(0xB9);
+    code.extend_from_slice(&count.to_le_bytes());
+    // mov eax, 0x00FF0000
+    code.push(0xB8);
+    code.extend_from_slice(&0x00FF0000u32.to_le_bytes());
+    let loop_start = code.len();
+    // mov [edi], eax  (ModRM: mod=00 reg=000(eax) rm=111(edi) -> 0x07)
+    code.extend_from_slice(&[0x89, 0x07]);
+    // add edi, 4  (83 /0 ib, ModRM for edi = C7)
+    code.extend_from_slice(&[0x83, 0xC7, 0x04]);
+    // dec ecx (FF /1, ModRM for ecx = C9)
+    code.extend_from_slice(&[0xFF, 0xC9]);
+    // jnz loop_start (rel8)
+    let rel = (loop_start as i32) - ((code.len() as i32) + 2);
+    if rel < -128 || rel > 127 {
+        return Err("Framebuffer test: bucle fuera de rango rel8".into());
+    }
+    code.extend_from_slice(&[0x75, rel as i8 as u8]);
+    // hlt
+    code.push(0xF4);
+
+    vm.load_code(GuestAddress::new(0), &code)?;
+    vm.set_rip(0);
+
+    let mut steps = 0usize;
+    let max_steps = 2_000_000usize;
+    let mut exit_reason = None;
+    while steps < max_steps {
+        steps += 1;
+        if let Some(exit) = vm.step_once()? {
+            exit_reason = Some(exit);
+            break;
+        }
+    }
+    let exit = exit_reason.ok_or("Framebuffer test: la VM no alcanzo HLT dentro del limite de pasos")?;
+    assert_eq!(exit, VcpuExit::Halt, "Framebuffer test: salida inesperada {:?}", exit);
+    println!("  [OK] Guest programo VBE y escribio patron en LFB (HLT, pasos={})", steps);
+
+    let mut fb_info: Option<(u64, u32, u32, u32, usize)> = None;
+    for dev in &vm.devices {
+        if let Some(vbe) = dev.as_any().downcast_ref::<capsule_devices::BochsVbe>() {
+            assert!(vbe.is_enabled(), "VBE debe estar habilitado");
+            assert!(vbe.is_lfb_enabled(), "VBE LFB debe estar habilitado");
+            assert_eq!(vbe.width(), 320);
+            assert_eq!(vbe.height(), 200);
+            assert_eq!(vbe.bpp(), 32);
+            assert_eq!(vbe.lfb_base(), VBE_DISPI_LFB_PHYSICAL_ADDRESS);
+            fb_info = Some((vbe.lfb_base(), vbe.width(), vbe.height(), vbe.bpp(), vbe.stride_bytes()));
+            println!(
+                "  [OK] Bochs VBE: {}x{}x{} LFB@0x{:08X} stride={}",
+                vbe.width(), vbe.height(), vbe.bpp(), vbe.lfb_base(), vbe.stride_bytes()
+            );
+        }
+    }
+    let (base, w, h, _bpp, _stride) = fb_info.ok_or("Framebuffer test: no se encontro dispositivo BochsVbe")?;
+
+    let mut px = [0u8; 4];
+    vm.memory.read_bytes(GuestAddress::new(base), &mut px)?;
+    assert_eq!(u32::from_le_bytes(px), 0x00FF0000, "Pixel (0,0) en LFB incorrecto");
+    vm.memory.read_bytes(GuestAddress::new(base + 4 * (w as u64) * 5), &mut px)?;
+    assert_eq!(u32::from_le_bytes(px), 0x00FF0000, "Pixel en fila 5 del LFB incorrecto");
+    println!("  [OK] LFB en memoria guest contiene el patron esperado");
+
+    let mut bgra = vec![0u32; (w as usize) * (h as usize)];
+    let copied = vm.copy_framebuffer_bgra32(&mut bgra).ok_or("copy_framebuffer_bgra32 fallo")?;
+    assert_eq!(copied, (w, h));
+    assert_eq!(bgra[0], 0x00FF0000);
+    println!("  [OK] Copia de framebuffer para render Win32 ({}x{})", copied.0, copied.1);
+
+    println!("--------------------------------------------------");
+    println!("  Framebuffer M9 (Bochs VBE + LFB + blit host): EXITO");
+    println!("  Nota: LFB en RAM guest (sin MMIO), sin inyeccion de IRQ en CPU.");
+    println!("==================================================");
+    Ok(())
+}
 fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("   Prueba de Plataforma Virtual (Hito M7)       ");
@@ -966,6 +1093,229 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+const GUI_TIMER_ID: usize = 1;
+const GUI_TIMER_MS: u32 = 16;
+const GUI_STEPS_PER_TICK: usize = 50_000;
+
+struct GuiState {
+    vm: VirtualMachine,
+    fb_pixels: Vec<u32>,
+    fb_w: u32,
+    fb_h: u32,
+    info: &'static HostInfo,
+    status: String,
+}
+
+unsafe fn draw_diagnostics(hdc: HDC, rect: &RECT, info: &HostInfo, status: &str) {
+    let bg_brush = CreateSolidBrush(rgb(24, 26, 32));
+    FillRect(hdc, rect, bg_brush);
+    DeleteObject(bg_brush);
+
+    SetBkMode(hdc, TRANSPARENT as i32);
+
+    let title_font = create_gdi_font(24, 700);
+    let subtitle_font = create_gdi_font(16, 600);
+    let body_font = create_gdi_font(15, 400);
+    let code_font = create_gdi_font(14, 400);
+
+    SelectObject(hdc, title_font);
+    SetTextColor(hdc, rgb(255, 255, 255));
+    let title = format!("CapsuleOS - Runtime v{}", CAPSULE_VERSION);
+    draw_text_line(hdc, &title, 32, 28, 640, 32, DT_LEFT);
+
+    SelectObject(hdc, subtitle_font);
+    SetTextColor(hdc, rgb(130, 140, 160));
+    draw_text_line(
+        hdc,
+        "Sistema operativo completo como ejecutable autonomo",
+        32,
+        64,
+        640,
+        24,
+        DT_LEFT,
+    );
+
+    let line_brush = CreateSolidBrush(rgb(56, 189, 248));
+    let line_rect = RECT {
+        left: 32,
+        top: 96,
+        right: rect.right - 32,
+        bottom: 98,
+    };
+    FillRect(hdc, &line_rect, line_brush);
+    DeleteObject(line_brush);
+
+    let mut current_y = 114;
+
+    current_y = draw_card_header(hdc, "Host Platform", 32, current_y, rect.right - 32, subtitle_font);
+    SelectObject(hdc, body_font);
+    SetTextColor(hdc, rgb(220, 225, 235));
+    let os_desc = format!(
+        "OS: {} | Build: {} | Arch: {}",
+        info.os.os_name, info.os.build_number, info.os.architecture
+    );
+    draw_text_line(hdc, &os_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 34;
+
+    current_y = draw_card_header(hdc, "Procesador (CPU)", 32, current_y, rect.right - 32, subtitle_font);
+    SelectObject(hdc, body_font);
+    SetTextColor(hdc, rgb(220, 225, 235));
+    let cpu_desc = format!("Modelo: {} ({})", info.cpu.brand_name, info.cpu.vendor);
+    draw_text_line(hdc, &cpu_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 24;
+
+    let virt_hw = if info.cpu.virtualization_supported() {
+        "Soportado por CPU (VT-x / AMD-V / Hypervisor)"
+    } else {
+        "No detectado o deshabilitado en firmware"
+    };
+    let cores_desc = format!(
+        "Nucleos logicos: {}  |  Virtualizacion HW: {}",
+        info.cpu.logical_cores, virt_hw
+    );
+    draw_text_line(hdc, &cores_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 34;
+
+    current_y = draw_card_header(hdc, "Memoria RAM", 32, current_y, rect.right - 32, subtitle_font);
+    SelectObject(hdc, body_font);
+    SetTextColor(hdc, rgb(220, 225, 235));
+    let ram_desc = format!(
+        "Total: {}  |  Disponible: {}  |  Uso del sistema: {}%",
+        info.memory.total_phys, info.memory.avail_phys, info.memory.memory_load_percent
+    );
+    draw_text_line(hdc, &ram_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 34;
+
+    current_y = draw_card_header(hdc, "Backend de Virtualizacion", 32, current_y, rect.right - 32, subtitle_font);
+    SelectObject(hdc, body_font);
+
+    let (whpx_text, whpx_color) = match info.whpx {
+        WhpxStatus::Available => (
+            "WHPX: DISPONIBLE (Aceleracion nativa de hardware activa)",
+            rgb(74, 222, 128),
+        ),
+        WhpxStatus::FeatureNotEnabled => (
+            "WHPX: DLL DETECTADA, PERO HIPERVISOR INACTIVO (Modo emulador disponible)",
+            rgb(251, 191, 36),
+        ),
+        WhpxStatus::NotInstalled => (
+            "WHPX: NO INSTALADO (Modo emulador disponible)",
+            rgb(248, 113, 113),
+        ),
+    };
+
+    SetTextColor(hdc, whpx_color);
+    draw_text_line(hdc, whpx_text, 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 24;
+
+    SetTextColor(hdc, rgb(160, 170, 185));
+    SelectObject(hdc, code_font);
+    draw_text_line(hdc, info.whpx.description(), 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 34;
+
+    current_y = draw_card_header(hdc, "Capsule Runtime (M0-M9)", 32, current_y, rect.right - 32, subtitle_font);
+    SelectObject(hdc, body_font);
+    SetTextColor(hdc, rgb(74, 222, 128));
+    draw_text_line(
+        hdc,
+        "OK - UART, boot, ATA/IDE, COW, plataforma, NAT/virtio-net y framebuffer VGA/Bochs VBE",
+        48,
+        current_y,
+        rect.right - 48,
+        22,
+        DT_LEFT,
+    );
+    current_y += 24;
+
+    SetTextColor(hdc, rgb(220, 225, 235));
+    draw_text_line(hdc, status, 48, current_y, rect.right - 48, 22, DT_LEFT);
+    current_y += 24;
+
+    SetTextColor(hdc, rgb(140, 150, 170));
+    SelectObject(hdc, code_font);
+    draw_text_line(
+        hdc,
+        "Siguiente paso: inyeccion de IRQ en CPU (IDT/CLI/STI/IRET), M12 (firmware/boot real)",
+        48,
+        current_y,
+        rect.right - 48,
+        22,
+        DT_LEFT,
+    );
+
+    SetTextColor(hdc, rgb(100, 110, 130));
+    let footer = "Presione [Esc] o cierre la ventana para salir.";
+    draw_text_line(hdc, footer, 32, rect.bottom - 36, rect.right - 32, 20, DT_CENTER);
+
+    DeleteObject(title_font);
+    DeleteObject(subtitle_font);
+    DeleteObject(body_font);
+    DeleteObject(code_font);
+}
+
+fn load_vbe_demo_guest(vm: &mut VirtualMachine) -> Result<(), Box<dyn std::error::Error>> {
+    use capsule_devices::vga::{
+        VBE_DISPI_INDEX_BPP, VBE_DISPI_INDEX_ENABLE, VBE_DISPI_INDEX_XRES, VBE_DISPI_INDEX_YRES,
+        VBE_DISPI_LFB_ENABLED,
+    };
+    use capsule_devices::{VBE_DISPI_IOPORT_DATA, VBE_DISPI_IOPORT_INDEX};
+
+    let mut code: Vec<u8> = Vec::new();
+    let vbe_index: u16 = VBE_DISPI_IOPORT_INDEX;
+    let vbe_data: u16 = VBE_DISPI_IOPORT_DATA;
+    let emit_out32 = |c: &mut Vec<u8>, port: u16, val: u32| {
+        c.push(0xBA);
+        c.extend_from_slice(&(port as u32).to_le_bytes());
+        c.push(0xB8);
+        c.extend_from_slice(&val.to_le_bytes());
+        c.push(0xEF);
+    };
+    let emit_vbe = |c: &mut Vec<u8>, idx: u16, val: u16| {
+        emit_out32(c, vbe_index, idx as u32);
+        emit_out32(c, vbe_data, val as u32);
+    };
+
+    // 320x200x32 LFB
+    emit_vbe(&mut code, VBE_DISPI_INDEX_XRES, 320);
+    emit_vbe(&mut code, VBE_DISPI_INDEX_YRES, 200);
+    emit_vbe(&mut code, VBE_DISPI_INDEX_BPP, 32);
+    emit_vbe(&mut code, VBE_DISPI_INDEX_ENABLE, 0x01 | VBE_DISPI_LFB_ENABLED);
+
+    // Rellenar todo el framebuffer (320*200) con barras de color simples:
+    // dividimos en franjas horizontales cambiando color cada 40 filas (5 colores x 40 filas)
+    // Implementacion simple: bucle externo por filas-bloques no trivial; hacemos un relleno unico degradado aproximado
+    // escribiendo un patron repetitivo por palabras.
+    // mov edi, 0x00400000
+    code.extend_from_slice(&[0xBF, 0x00, 0x00, 0x40, 0x00]);
+    // mov ecx, 320*200
+    let count: u32 = 320 * 200;
+    code.push(0xB9);
+    code.extend_from_slice(&count.to_le_bytes());
+    // mov eax, 0x00205090 (color inicial)
+    code.push(0xB8);
+    code.extend_from_slice(&0x00205090u32.to_le_bytes());
+    let loop_start = code.len();
+    // mov [edi], eax
+    code.extend_from_slice(&[0x89, 0x07]);
+    // add edi, 4
+    code.extend_from_slice(&[0x83, 0xC7, 0x04]);
+    // add eax, 0x00010101 (ligera variacion de color) - usar grupo 0x81 /0 por compatibilidad con la vCPU
+    code.extend_from_slice(&[0x81, 0xC0, 0x01, 0x01, 0x01, 0x00]);
+    // dec ecx
+    code.extend_from_slice(&[0xFF, 0xC9]);
+    // jnz loop_start
+    let rel = (loop_start as i32) - ((code.len() as i32) + 2);
+    if rel < -128 || rel > 127 {
+        return Err("demo VBE: bucle fuera de rango rel8".into());
+    }
+    code.extend_from_slice(&[0x75, rel as i8 as u8]);
+    code.push(0xF4);
+
+    vm.load_code(GuestAddress::new(0), &code)?;
+    vm.set_rip(0);
+    Ok(())
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -973,6 +1323,37 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_CREATE => {
+            let cs = &*(lparam as *const CREATESTRUCTW);
+            let state_ptr = cs.lpCreateParams as *mut GuiState;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+            SetTimer(hwnd, GUI_TIMER_ID, GUI_TIMER_MS, None);
+            0
+        }
+        WM_TIMER => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if state.vm.status == capsule_vmm::state::VmStatus::Created
+                    || state.vm.status == capsule_vmm::state::VmStatus::Running
+                {
+                    let _ = state.vm.run_steps(GUI_STEPS_PER_TICK);
+                }
+                if let Some((_base, w, h, _bpp, _stride)) = state.vm.vbe_framebuffer_info() {
+                    let needed = (w as usize).saturating_mul(h as usize);
+                    if needed > 0 {
+                        if state.fb_pixels.len() != needed || state.fb_w != w || state.fb_h != h {
+                            state.fb_pixels.resize(needed, 0);
+                            state.fb_w = w;
+                            state.fb_h = h;
+                        }
+                        let _ = state.vm.copy_framebuffer_bgra32(&mut state.fb_pixels);
+                    }
+                }
+                InvalidateRect(hwnd, std::ptr::null(), 0);
+            }
+            0
+        }
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc: HDC = BeginPaint(hwnd, &mut ps);
@@ -980,203 +1361,91 @@ unsafe extern "system" fn window_proc(
             let mut rect: RECT = std::mem::zeroed();
             GetClientRect(hwnd, &mut rect);
 
-            let info = get_host_info();
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if state.fb_w > 0 && state.fb_h > 0 && !state.fb_pixels.is_empty() {
+                    // Fondo
+                    let bg = CreateSolidBrush(rgb(12, 14, 18));
+                    FillRect(hdc, &rect, bg);
+                    DeleteObject(bg);
 
-            let bg_brush = CreateSolidBrush(rgb(24, 26, 32));
-            FillRect(hdc, &rect, bg_brush);
-            DeleteObject(bg_brush);
+                    // Area de framebuffer (arriba) y barra de estado (abajo)
+                    let status_h = 28;
+                    let fb_area_h = (rect.bottom - rect.top - status_h).max(1);
+                    let fb_area_w = (rect.right - rect.left).max(1);
 
-            SetBkMode(hdc, TRANSPARENT as i32);
+                    // Escalado preservando aspecto
+                    let src_w = state.fb_w as i32;
+                    let src_h = state.fb_h as i32;
+                    let mut dst_w = fb_area_w;
+                    let mut dst_h = (fb_area_w * src_h) / src_w.max(1);
+                    if dst_h > fb_area_h {
+                        dst_h = fb_area_h;
+                        dst_w = (fb_area_h * src_w) / src_h.max(1);
+                    }
+                    let dst_x = (fb_area_w - dst_w) / 2;
+                    let dst_y = (fb_area_h - dst_h) / 2;
 
-            let title_font = create_gdi_font(24, 700);
-            let subtitle_font = create_gdi_font(16, 600);
-            let body_font = create_gdi_font(15, 400);
-            let code_font = create_gdi_font(14, 400);
+                    let mut bmi: BITMAPINFO = std::mem::zeroed();
+                    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+                    bmi.bmiHeader.biWidth = src_w;
+                    bmi.bmiHeader.biHeight = -src_h; // top-down
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 32;
+                    bmi.bmiHeader.biCompression = BI_RGB;
 
-            SelectObject(hdc, title_font);
-            SetTextColor(hdc, rgb(255, 255, 255));
-            let title = format!("CapsuleOS — Runtime v{}", CAPSULE_VERSION);
-            draw_text_line(hdc, &title, 32, 28, 640, 32, DT_LEFT);
+                    StretchDIBits(
+                        hdc,
+                        dst_x,
+                        dst_y,
+                        dst_w,
+                        dst_h,
+                        0,
+                        0,
+                        src_w,
+                        src_h,
+                        state.fb_pixels.as_ptr() as *const _,
+                        &bmi,
+                        DIB_RGB_COLORS,
+                        SRCCOPY,
+                    );
 
-            SelectObject(hdc, subtitle_font);
-            SetTextColor(hdc, rgb(130, 140, 160));
-            draw_text_line(
-                hdc,
-                "Sistema operativo completo como ejecutable autónomo",
-                32,
-                64,
-                640,
-                24,
-                DT_LEFT,
-            );
+                    // Barra de estado
+                    let bar_rect = RECT {
+                        left: 0,
+                        top: rect.bottom - status_h,
+                        right: rect.right,
+                        bottom: rect.bottom,
+                    };
+                    let bar = CreateSolidBrush(rgb(24, 26, 32));
+                    FillRect(hdc, &bar_rect, bar);
+                    DeleteObject(bar);
 
-            let line_brush = CreateSolidBrush(rgb(56, 189, 248));
-            let line_rect = RECT {
-                left: 32,
-                top: 96,
-                right: rect.right - 32,
-                bottom: 98,
-            };
-            FillRect(hdc, &line_rect, line_brush);
-            DeleteObject(line_brush);
-
-            let mut current_y = 114;
-
-            current_y = draw_card_header(
-                hdc,
-                "Host Platform",
-                32,
-                current_y,
-                rect.right - 32,
-                subtitle_font,
-            );
-            SelectObject(hdc, body_font);
-            SetTextColor(hdc, rgb(220, 225, 235));
-            let os_desc = format!(
-                "OS: {} | Build: {} | Arch: {}",
-                info.os.os_name, info.os.build_number, info.os.architecture
-            );
-            draw_text_line(hdc, &os_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
-            current_y += 34;
-
-            current_y = draw_card_header(
-                hdc,
-                "Procesador (CPU)",
-                32,
-                current_y,
-                rect.right - 32,
-                subtitle_font,
-            );
-            SelectObject(hdc, body_font);
-            SetTextColor(hdc, rgb(220, 225, 235));
-            let cpu_desc = format!("Modelo: {} ({})", info.cpu.brand_name, info.cpu.vendor);
-            draw_text_line(hdc, &cpu_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
-            current_y += 24;
-
-            let virt_hw = if info.cpu.virtualization_supported() {
-                "Soportado por CPU (VT-x / AMD-V / Hypervisor)"
+                    SetBkMode(hdc, TRANSPARENT as i32);
+                    let font = create_gdi_font(14, 400);
+                    SelectObject(hdc, font);
+                    SetTextColor(hdc, rgb(200, 210, 220));
+                    let status = format!(
+                        "M9 Framebuffer VGA/Bochs VBE: {}x{}x32 LFB activo  |  VM: {:?}  |  [Esc] salir",
+                        state.fb_w, state.fb_h, state.vm.status
+                    );
+                    let mut text_rect = bar_rect;
+                    text_rect.left += 8;
+                    DrawTextW(
+                        hdc,
+                        status.encode_utf16().collect::<Vec<u16>>().as_mut_ptr(),
+                        -1,
+                        &mut text_rect,
+                        DT_LEFT | DT_SINGLELINE | DT_TOP | DT_NOPREFIX,
+                    );
+                    DeleteObject(font);
+                } else {
+                    draw_diagnostics(hdc, &rect, state.info, &state.status);
+                }
             } else {
-                "No detectado o deshabilitado en firmware"
-            };
-            let cores_desc = format!(
-                "Núcleos lógicos: {}  |  Virtualización HW: {}",
-                info.cpu.logical_cores, virt_hw
-            );
-            draw_text_line(hdc, &cores_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
-            current_y += 34;
-
-            current_y = draw_card_header(
-                hdc,
-                "Memoria RAM",
-                32,
-                current_y,
-                rect.right - 32,
-                subtitle_font,
-            );
-            SelectObject(hdc, body_font);
-            SetTextColor(hdc, rgb(220, 225, 235));
-            let ram_desc = format!(
-                "Total: {}  |  Disponible: {}  |  Uso del sistema: {}%",
-                info.memory.total_phys, info.memory.avail_phys, info.memory.memory_load_percent
-            );
-            draw_text_line(hdc, &ram_desc, 48, current_y, rect.right - 48, 22, DT_LEFT);
-            current_y += 34;
-
-            current_y = draw_card_header(
-                hdc,
-                "Backend de Virtualización",
-                32,
-                current_y,
-                rect.right - 32,
-                subtitle_font,
-            );
-            SelectObject(hdc, body_font);
-
-            let (whpx_text, whpx_color) = match info.whpx {
-                WhpxStatus::Available => (
-                    "WHPX: DISPONIBLE (Aceleración nativa de hardware activa)",
-                    rgb(74, 222, 128),
-                ),
-                WhpxStatus::FeatureNotEnabled => (
-                    "WHPX: DLL DETECTADA, PERO HIPERVISOR INACTIVO (Modo emulador disponible)",
-                    rgb(251, 191, 36),
-                ),
-                WhpxStatus::NotInstalled => (
-                    "WHPX: NO INSTALADO (Modo emulador disponible)",
-                    rgb(248, 113, 113),
-                ),
-            };
-
-            SetTextColor(hdc, whpx_color);
-            draw_text_line(hdc, whpx_text, 48, current_y, rect.right - 48, 22, DT_LEFT);
-            current_y += 24;
-
-            SetTextColor(hdc, rgb(160, 170, 185));
-            SelectObject(hdc, code_font);
-            draw_text_line(
-                hdc,
-                info.whpx.description(),
-                48,
-                current_y,
-                rect.right - 48,
-                22,
-                DT_LEFT,
-            );
-            current_y += 34;
-
-            current_y = draw_card_header(
-                hdc,
-                "Capsule Runtime & Storage",
-                32,
-                current_y,
-                rect.right - 32,
-                subtitle_font,
-            );
-            SelectObject(hdc, body_font);
-            SetTextColor(hdc, rgb(74, 222, 128));
-            draw_text_line(
-                hdc,
-                "OK - UART, boot Linux, ATA/IDE, COW, plataforma y red NAT/virtio-net (Hitos M0-M8 completados)",
-                48,
-                current_y,
-                rect.right - 48,
-                22,
-                DT_LEFT,
-            );
-            current_y += 24;
-
-            SetTextColor(hdc, rgb(220, 225, 235));
-            draw_text_line(
-                hdc,
-                "M5-M8: RAW/VHD+COW, boot LBA0->0x7C00, PIC/PIT/RTC/PCI, virtio-net/NAT y test-platform/test-network",
-                48,
-                current_y,
-                rect.right - 48,
-                22,
-                DT_LEFT,
-            );
-            current_y += 24;
-
-            SetTextColor(hdc, rgb(140, 150, 170));
-            SelectObject(hdc, code_font);
-            draw_text_line(
-                hdc,
-                "Siguiente paso: inyección de IRQ en CPU (IDT/CLI/STI/IRET), M9 (framebuffer) y M12 (firmware/boot real)",
-                48,
-                current_y,
-                rect.right - 48,
-                22,
-                DT_LEFT,
-            );
-
-            SetTextColor(hdc, rgb(100, 110, 130));
-            let footer = "Presione [Esc] o cierre la ventana para salir.";
-            draw_text_line(hdc, footer, 32, rect.bottom - 36, rect.right - 32, 20, DT_CENTER);
-
-            DeleteObject(title_font);
-            DeleteObject(subtitle_font);
-            DeleteObject(body_font);
-            DeleteObject(code_font);
+                draw_diagnostics(hdc, &rect, get_host_info(), "Inicializando runtime...");
+            }
 
             EndPaint(hwnd, &ps);
             0
@@ -1192,6 +1461,12 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_DESTROY => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut GuiState;
+            if !ptr.is_null() {
+                KillTimer(hwnd, GUI_TIMER_ID);
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                drop(Box::from_raw(ptr));
+            }
             PostQuitMessage(0);
             0
         }
@@ -1254,6 +1529,7 @@ unsafe fn draw_text_line(
     format_flags: u32,
 ) {
     let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
     let mut rect = RECT {
         left: x,
         top: y,
@@ -1262,8 +1538,8 @@ unsafe fn draw_text_line(
     };
     DrawTextW(
         hdc,
-        wide.as_mut_ptr(),
-        wide.len() as i32,
+        wide.as_ptr(),
+        -1,
         &mut rect,
         format_flags | DT_NOPREFIX,
     );
@@ -1355,13 +1631,48 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|arg| arg == "test-framebuffer" || arg == "--test-framebuffer") {
+        if let Err(e) = run_test_framebuffer() {
+            eprintln!("Error en test-framebuffer: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let host_info = get_host_info();
     print_cli_summary(host_info);
+
+    let mut vm = match VirtualMachine::new(VmConfig {
+        name: "CapsuleGUI".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(16),
+    }) {
+        Ok(vm) => vm,
+        Err(e) => {
+            eprintln!("Error creando VM para GUI: {}", e);
+            return;
+        }
+    };
+
+    let status = match load_vbe_demo_guest(&mut vm) {
+        Ok(()) => "Demo guest M9 cargado: programando VBE 320x200x32 y dibujando en LFB...".to_string(),
+        Err(e) => format!("No se pudo cargar demo VBE: {} (mostrando diagnostico)", e),
+    };
+
+    let state = Box::new(GuiState {
+        vm,
+        fb_pixels: Vec::new(),
+        fb_w: 0,
+        fb_h: 0,
+        info: host_info,
+        status,
+    });
+    let state_ptr = Box::into_raw(state);
 
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name: Vec<u16> = "CapsuleOS_HostWindow\0".encode_utf16().collect();
-        let window_title: Vec<u16> = "CapsuleOS — Runtime Host & Diagnostics\0"
+        let window_title: Vec<u16> = "CapsuleOS - Framebuffer Runtime (M9)\0"
             .encode_utf16()
             .collect();
 
@@ -1380,8 +1691,8 @@ fn main() {
 
         RegisterClassW(&wnd_class);
 
-        let width = 740;
-        let height = 540;
+        let width = 980;
+        let height = 720;
 
         let hwnd = CreateWindowExW(
             0,
@@ -1395,11 +1706,12 @@ fn main() {
             null_mut(),
             null_mut(),
             instance,
-            std::ptr::null(),
+            state_ptr as *const _,
         );
 
         if hwnd.is_null() {
             eprintln!("Error al crear la ventana principal de CapsuleOS.");
+            drop(Box::from_raw(state_ptr));
             return;
         }
 

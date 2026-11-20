@@ -37,9 +37,9 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Limitación**: Un intérprete de instrucciones x86_64 en modo software es órdenes de magnitud más lento que la virtualización por hardware nativa.
 * **Objetivo de uso**: La emulación por software está destinada a sistemas minimalistas (kernels embebidos, pruebas, NanoOS o Linux mínimo de recuperación) y no para sistemas de escritorio pesados con entornos gráficos complejos hasta no disponer de un motor de traducción binaria dinámica (JIT).
 
-### 2.3. Plataforma/IRQ en la CPU software (estado M7-M8)
+### 2.3. Plataforma/IRQ en la CPU software (estado M7-M9)
 * **Limitación**: El backend de CPU software actual no implementa entrega de interrupciones arquitecturales (IDT/CLI/STI/IRET/APIC). Aunque el PIC/PIT/RTC/PCI/IDE reflejan IRQs y condiciones pendientes (p. ej. PIT IRQ0, IDE IRQ14, INTx PCI/IRQ11), la VM procesa dispositivos por sondeo (polling) en cada tick/iteración.
-* **Impacto**: Guests que dependan estrictamente de interrupciones temporizadas o de notificación asíncrona por IRQ pueden no funcionar correctamente hasta que se implemente inyección/entrega de interrupciones en la vCPU.
+* **Impacto**: Guests que dependan estrictamente de interrupciones temporizadas o de notificación asíncrona por IRQ pueden no funcionar correctamente hasta que se implemente inyección/entrega de interrupciones en la vCPU. Esto también aplica a señales de video (p. ej. VBlank) no disponibles en M9.
 
 ---
 
@@ -50,6 +50,8 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Estado M8**: `capsule-network::UserModeNat` implementa una pila/NAT en modo usuario básica (ARP, DHCP básico, ICMP echo a IPs virtuales, reenvío UDP saliente mediante sockets del host con un flujo pendiente) expuesta al guest por `VirtioNetPci` (PCI legacy I/O BAR0, virtqueues RX/TX en memoria guest) operada por sondeo desde la VM.
 * **Limitaciones actuales**: sin TCP y sin múltiples flujos/conexiones concurrentes completas; DNS no es resolución real completa (uso de IPs virtuales/reenvío limitado); sin MMIO/transporte moderno y sin inyección de IRQ en CPU (IDT/CLI/STI/IRET), por lo que el dispositivo depende de polling; INTx PCI se agrega como IRQ11 en PIC a nivel de plataforma.
 
-### 3.2. Aceleración Gráfica
-* **Limitación**: El acceso directo a GPU (GPU Passthrough) no está disponible en hipervisores de tipo 2 de nivel de usuario en Windows.
-* **Solución**: Proporcionar un adaptador de framebuffer de alto rendimiento (Bochs VBE / VESA) con transferencia directa de búfer mediante GDI DIBSection / Direct3D 11 swap chain para alcanzar 60 FPS estables en la interfaz gráfica del SO invitado.
+### 3.2. Gráficos / Framebuffer (M9: implementación inicial Bochs VBE)
+* **Estado M9**: Se implementa `BochsVbe` con programación por puertos DISPI (`0x01CE/0x01CF`) y framebuffer lineal (LFB) en RAM guest en `0x0040_0000`, leído por la GUI del host y bliteado a la ventana Win32 con GDI (`StretchDIBits`, DIB 32bpp top-down) en tiempo real por sondeo/timer.
+* **Limitaciones actuales**: LFB modelado en RAM guest (no BAR MMIO dedicado de dispositivo PCI/VGA) para encajar en el modelo actual sin MMIO; sin VBlank/IRQ ni sincronización avanzada; compatibilidad VBE/parcial orientada a validación inicial; sin aceleración 2D/3D ni `virtio-gpu`.
+* **Impacto**: Guests gráficos reales pueden requerir mayor fidelidad VBE/VGA, MMIO y temporización/IRQ para funcionar correctamente.
+* **Solución**: Evolucionar a adaptador de framebuffer con MMIO/BAR adecuado, sincronización eficiente y ruta de presentación optimizada (DIBSection/Direct3D 11) para estabilidad y rendimiento.

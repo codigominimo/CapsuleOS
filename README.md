@@ -1,4 +1,4 @@
-# CapsuleOS 🚀
+# CapsuleOS
 
 > **Sistemas operativos completos dentro de una cápsula ejecutable portable `.exe` para Windows.**
 
@@ -132,6 +132,13 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Comando CLI de validación: `capsule.exe test-network`.
   - Alcance diferido: TCP, múltiples flujos/conexiones concurrentes, DNS real completo, features/offloads avanzados, inyección de IRQ en CPU (IDT/CLI/STI/IRET) y transporte moderno/MMIO.
 
+* [x] **Hito M9 - Framebuffer & Window Blit (VGA/Bochs VBE)**:
+  - Dispositivo `BochsVbe` (puertos DISPI `0x01CE/0x01CF`) con programación de modo/resolución/bpp y habilitación de LFB.
+  - Framebuffer lineal mapeado en RAM guest en `0x0040_0000` (modelo sin MMIO, compatible con el backend software actual) y acceso desde `GuestMemory`.
+  - Integración VMM/GUI: `step_once/run_steps` y copia de framebuffer a buffer BGRA32 para blit Win32 (`StretchDIBits`), renderizado en tiempo real en la ventana de `capsule.exe`.
+  - Comando CLI de validación: `capsule.exe test-framebuffer`.
+  - Limitaciones: LFB en RAM guest (no BAR MMIO dedicado), sin inyección de IRQ en CPU (IDT/CLI/STI/IRET), backend de render por sondeo/timer.
+
 ---
 
 ## Compilación y Uso
@@ -211,6 +218,12 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 .\target\release\capsule.exe test-network
 ```
 
+
+### Verificar framebuffer VGA/Bochs VBE y blit Win32 (Hito M9)
+`powershell
+# Programa VBE por puertos I/O, escribe en LFB guest (0x0040_0000) y valida copia BGRA32 para render
+.\target\release\capsule.exe test-framebuffer
+`
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell
 cargo test --workspace

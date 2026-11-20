@@ -8,7 +8,7 @@ use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
 use capsule_devices::{
-    IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550, VirtioNetPci, COM1_BASE,
+    BochsVbe, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550, VirtioNetPci, COM1_BASE,
 };
 use capsule_memory::GuestMemory;
 use capsule_storage::BlockDevice;
@@ -23,9 +23,9 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     /// Inicializa una nueva máquina virtual con la configuración dada.
-    /// Registra dispositivos de plataforma básicos: COM1 (UART 16550), PIC 8259, PIT 8254,
-    /// RTC/CMOS, un bus PCI (config mechanism #1) y una NIC virtio-net transitional
-    /// con backend NAT en modo usuario (M8).
+    /// Registra dispositivos de plataforma basicos: COM1 (UART 16550), PIC 8259, PIT 8254,
+    /// RTC/CMOS, Bochs VBE (framebuffer, M9), un bus PCI (config mechanism #1) y una NIC
+    /// virtio-net transitional con backend NAT en modo usuario (M8).
     pub fn new(config: VmConfig) -> Result<Self, VmmError> {
         let mem_size = config.memory_size.as_bytes() as usize;
         let memory = GuestMemory::new(mem_size).map_err(|e| {
@@ -46,6 +46,7 @@ impl VirtualMachine {
         vm.add_device(Box::new(Pic8259::new()));
         vm.add_device(Box::new(Pit8254::new()));
         vm.add_device(Box::new(RtcCmos::new()));
+        vm.add_device(Box::new(BochsVbe::new()));
 
         let mut pci = PciBus::new();
         pci.attach_device(Box::new(VirtioNetPci::new_default()));
@@ -209,6 +210,171 @@ impl VirtualMachine {
                 break;
             }
         }
+    }
+
+    /// Ejecuta un paso de la VM (tick de plataforma + una instruccion de vCPU).
+    /// Devuelve Ok(None) si debe continuar, Ok(Some(exit)) si hay salida,
+    /// o error en fallo. Util para bucles de UI/tiempo real que intercalan renderizado.
+    pub fn step_once(&mut self) -> Result<Option<VcpuExit>, VmmError> {
+        if self.status == VmStatus::Created || self.status == VmStatus::Paused {
+            self.status = VmStatus::Running;
+        }
+        self.tick_platform();
+        match self.vcpu.step(&mut self.memory) {
+            Ok(None) => Ok(None),
+            Ok(Some(CpuExitReason::Halt)) => {
+                self.status = VmStatus::Halted;
+                Ok(Some(VcpuExit::Halt))
+            }
+            Ok(Some(CpuExitReason::IoOut { port, data, size })) => {
+                let mut handled = false;
+                for dev in &mut self.devices {
+                    if dev.handles_port(port) {
+                        dev.write_io(port, data, size);
+                        handled = true;
+                        break;
+                    }
+                }
+                self.tick_platform();
+                if handled {
+                    Ok(None)
+                } else {
+                    Ok(Some(VcpuExit::IoOut { port, data, size }))
+                }
+            }
+            Ok(Some(CpuExitReason::IoIn { port, size })) => {
+                let mut handled = false;
+                for dev in &mut self.devices {
+                    if dev.handles_port(port) {
+                        let val = dev.read_io(port, size);
+                        match size {
+                            1 => {
+                                self.vcpu.regs.rax =
+                                    (self.vcpu.regs.rax & !0xFF) | (val as u64 & 0xFF)
+                            }
+                            2 => {
+                                self.vcpu.regs.rax =
+                                    (self.vcpu.regs.rax & !0xFFFF) | (val as u64 & 0xFFFF)
+                            }
+                            4 => self.vcpu.regs.set_eax(val),
+                            _ => {}
+                        }
+                        handled = true;
+                        break;
+                    }
+                }
+                self.tick_platform();
+                if handled {
+                    Ok(None)
+                } else {
+                    Ok(Some(VcpuExit::IoIn { port, size }))
+                }
+            }
+            Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
+                self.status = VmStatus::Error;
+                Err(VmmError::VcpuError(format!(
+                    "Opcode no valido ejecutado: 0x{:02X} en RIP 0x{:016X}",
+                    op, self.vcpu.regs.rip
+                )))
+            }
+            Ok(Some(CpuExitReason::MemoryFault(msg))) => {
+                self.status = VmStatus::Error;
+                Err(VmmError::MemoryMappingFailed(msg))
+            }
+            Err(err) => {
+                self.status = VmStatus::Error;
+                Err(VmmError::VcpuError(err))
+            }
+        }
+    }
+
+    /// Avanza la VM hasta max_steps instrucciones o hasta una salida.
+    pub fn run_steps(&mut self, max_steps: usize) -> Result<Option<VcpuExit>, VmmError> {
+        for _ in 0..max_steps {
+            if let Some(exit) = self.step_once()? {
+                return Ok(Some(exit));
+            }
+            if self.status != VmStatus::Running {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Devuelve informacion del framebuffer VBE si esta habilitado con LFB.
+    /// (base_gpa, width, height, bpp, stride_bytes)
+    pub fn vbe_framebuffer_info(&self) -> Option<(u64, u32, u32, u32, usize)> {
+        for dev in &self.devices {
+            if let Some(vbe) = dev.as_any().downcast_ref::<BochsVbe>() {
+                if vbe.is_enabled() && vbe.is_lfb_enabled() {
+                    return Some((
+                        vbe.lfb_base(),
+                        vbe.width(),
+                        vbe.height(),
+                        vbe.bpp(),
+                        vbe.stride_bytes(),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Copia el framebuffer lineal guest a un buffer BGRA32 (0x00RRGGBB little-endian en memoria => B,G,R,X)
+    /// adecuado para DIB top-down de 32bpp. Devuelve (w,h) si hay framebuffer valido.
+    pub fn copy_framebuffer_bgra32(&self, out: &mut [u32]) -> Option<(u32, u32)> {
+        let (base, w, h, bpp, stride) = self.vbe_framebuffer_info()?;
+        if w == 0 || h == 0 { return None; }
+        let needed = (w as usize).saturating_mul(h as usize);
+        if out.len() < needed { return None; }
+        let mem_size = self.memory.size();
+        let base_usize = base as usize;
+        for y in 0..(h as usize) {
+            let row_off = base_usize.saturating_add(y.saturating_mul(stride));
+            for x in 0..(w as usize) {
+                let idx = y * (w as usize) + x;
+                let px = match bpp {
+                    32 => {
+                        let off = row_off + x * 4;
+                        if off + 4 > mem_size { 0 } else {
+                            let mut b = [0u8; 4];
+                            if self.memory.read_bytes(GuestAddress::new((off) as u64), &mut b).is_ok() {
+                                u32::from_le_bytes(b)
+                            } else { 0 }
+                        }
+                    }
+                    24 => {
+                        let off = row_off + x * 3;
+                        if off + 3 > mem_size { 0 } else {
+                            let mut b = [0u8; 3];
+                            if self.memory.read_bytes(GuestAddress::new((off) as u64), &mut b).is_ok() {
+                                (b[0] as u32) | ((b[1] as u32) << 8) | ((b[2] as u32) << 16) | 0xFF00_0000
+                            } else { 0 }
+                        }
+                    }
+                    16 | 15 => {
+                        let off = row_off + x * 2;
+                        if off + 2 > mem_size { 0 } else {
+                            let mut b = [0u8; 2];
+                            if self.memory.read_bytes(GuestAddress::new((off) as u64), &mut b).is_ok() {
+                                let v = u16::from_le_bytes(b);
+                                // RGB565
+                                let r5 = ((v >> 11) & 0x1F) as u32;
+                                let g6 = ((v >> 5) & 0x3F) as u32;
+                                let b5 = (v & 0x1F) as u32;
+                                let r = (r5 * 255 / 31) & 0xFF;
+                                let g = (g6 * 255 / 63) & 0xFF;
+                                let bb = (b5 * 255 / 31) & 0xFF;
+                                (bb) | (g << 8) | (r << 16) | 0xFF00_0000
+                            } else { 0 }
+                        }
+                    }
+                    _ => 0,
+                };
+                out[idx] = px;
+            }
+        }
+        Some((w, h))
     }
 
     /// Ejecuta el bucle principal de la vCPU hasta alcanzar una condición de salida (HALT, Error, etc.).

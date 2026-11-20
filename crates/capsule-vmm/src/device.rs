@@ -1,6 +1,6 @@
 //! Abstracción de dispositivos virtuales (I/O ports).
 
-use capsule_devices::{IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
+use capsule_devices::{BochsVbe, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
 use std::any::Any;
 
 pub trait VirtualDevice: Send + Any {
@@ -187,6 +187,34 @@ impl VirtualDevice for PciBus {
     }
 }
 
+
+/// Implementacion del trait VirtualDevice para el adaptador grafico Bochs VBE (puertos 0x01CE/0x01CF).
+/// El framebuffer lineal (LFB) reside en memoria fisica guest; la VM/GUI lo lee desde `GuestMemory`.
+impl VirtualDevice for BochsVbe {
+    fn name(&self) -> &str {
+        "BOCHS_VBE"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        BochsVbe::handles_port(self, port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        BochsVbe::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        BochsVbe::write_io(self, port, data, size);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 /// Dispositivo básico de consola / puerto de depuración en puerto simple (ej. puerto 0xE9).
 pub struct DebugConsoleDevice {
     pub name: String,

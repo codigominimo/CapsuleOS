@@ -73,7 +73,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
         fn run_vcpu(&mut self, id: usize) -> Result<VcpuExit, VmmError>;
     }
     ```
-  * Despacho de salidas de la VM (VM Exits: Port I/O, HLT, errores) y, en el backend software actual, avance por tick/sondeo de dispositivos de plataforma y PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, virtqueues/NAT) con acceso a memoria guest.
+  * Despacho de salidas de la VM (VM Exits: Port I/O, HLT, errores) y, en el backend software actual, avance por tick/sondeo de dispositivos de plataforma y PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, virtqueues/NAT) con acceso a memoria guest, ademas de stepping incremental para UI y utilidades de lectura/copia de framebuffer VBE.
   * Nota: MMIO y entrega/inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET) pendientes.
 
 * **`capsule-cpu`**:
@@ -98,12 +98,13 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-devices`**:
   * Enrutador de buses: Port I/O (espacio de direcciones de 16 bits `in`/`out`).
-  * Dispositivos de plataforma implementados (M4-M8):
+  * Dispositivos de plataforma implementados (M4-M9):
     * Puerto serie UART 16550 (COM1 en 0x3F8) para salida de consola y depuración del kernel.
     * Controlador de interrupciones PIC 8259 dual (maestro/esclavo) con ICW/OCW, IMR/ISR/IRR, cascada y EOI.
     * Temporizador PIT 8254 (canales 0-2, modos básicos) y RTC/CMOS MC146818 mínimo (0x70/0x71).
     * Bus PCI extensible (mecanismo #1, `0xCF8/0xCFC`) con enrutamiento de config/E/S, registro de funciones PCI y sondeo de dispositivos con acceso a memoria guest.
     * NIC `VirtioNetPci` transitional (legacy PCI I/O BAR0, split virtqueues RX/TX) integrada al bus PCI; sin MMIO.
+    * Adaptador grafico `BochsVbe` (puertos DISPI `0x01CE/0x01CF`) con LFB en RAM guest (`0x0040_0000`) para render host por sondeo.
   * Pendiente: MMIO, inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET), APIC local/IO-APIC y mayor fidelidad temporal.
 
 * **`capsule-storage`**:
@@ -113,13 +114,12 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
     * IDE / ATA PIO primario (maestro, LBA28) implementado para M5/M6 (sin DMA). IRQ14 se refleja a nivel de PIC según estado IDE (`irq_pending && !nIEN`), pero la CPU software aún no inyecta interrupciones.
     * `virtio-blk` planeado para alto rendimiento en guests modernos.
 
-* **`capsule-display`**:
-  * Framebuffer gráfico lineal en memoria (formato BGRA32 / BGR24).
+* **`capsule-display`** (funcionalidad integrada actualmente en `capsule-devices` + `capsule-gui`, crate dedicado pendiente):
+  * Framebuffer lineal en memoria guest (LFB) expuesto por `BochsVbe` (M9), con lectura por sondeo desde `GuestMemory`.
   * Emulación de adaptadores gráficos:
-    * Dispositivo VGA simple / extensiones Bochs VBE (utilizado universalmente por Linux y Windows).
+    * Bochs VBE DISPI (M9, validación inicial 32bpp/LFB en RAM guest).
     * `virtio-gpu` (futuro).
-  * Sincronización de refresco con la ventana de la aplicación.
-
+  * Sincronización de refresco con la ventana mediante timer GUI y blit Win32 (`StretchDIBits`).
 * **`capsule-input`**:
   * Controlador de teclado y ratón PS/2 (puertos 0x60/0x64).
   * Conversión de mensajes de entrada Win32 (`WM_KEYDOWN`, `WM_KEYUP`, `WM_MOUSEMOVE`, etc.) a scan codes PS/2 (Scan Code Set 1 y 2).
@@ -155,10 +155,9 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 ### 2.6. Interfaz de Usuario y CLI
 * **`capsule-gui`**:
-  * Ventana nativa Win32 optimizada para latencia cero.
-  * Renderizado del framebuffer guest mediante GDI `BitBlt` o DirectX / DirectComposition.
-  * Manejo de redimensionado, foco de entrada, captura de ratón y atajos de liberación.
-
+  * Ventana nativa Win32.
+  * Bucle de ejecución por pasos de VM (`step_once/run_steps`) y renderizado en tiempo real del framebuffer guest mediante GDI/DIB (`StretchDIBits`) cuando VBE LFB está activo (M9), con fallback a panel de diagnósticos.
+  * Manejo básico de ventana/redimensionado y cierre (input de teclado/ratón hacia el guest pendiente, M10).
 * **`capsule-cli`**:
   * Entrada por línea de comandos para control, inspección, arranque headless e integración con scripts.
 

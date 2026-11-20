@@ -17,7 +17,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M6** | **Copy-on-Write Persistence** | Overlay COW (bitmap por sector) sobre imágenes base RAW/VHD sin modificarlas, con persistencia | **Completado** |
 | **M7** | **Virtual Platform Devices** | PIC 8259 (dual, maestro/esclavo), PIT 8254, RTC/CMOS MC146818 y bus PCI extensible (config 0xCF8/0xCFC) integrados en la VM; IRQ0 (PIT) e IRQ14 (IDE primario, nivel) cableadas al PIC; validación con `test-platform` y pruebas unitarias | **Completado** |
 | **M8** | **Networking (User-mode NAT)**| Virtio-net transitional PCI legacy (I/O BAR0, split virtqueues RX/TX) con NAT en modo usuario (ARP, DHCP básico, ICMP, UDP por sondeo) e IRQ INTx PCI agregada en PIC IRQ11; validación con `test-network` y pruebas | **Completado** |
-| **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE y renderizado en tiempo real en la ventana Win32 | Pendiente |
+| **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE (puertos DISPI) con LFB en RAM guest, renderizado en tiempo real en ventana Win32 (DIB/StretchDIBits) y validación `test-framebuffer` | **Completado** |
 | **M10**| **GUI Input & PS/2** | Integración de ratón y teclado desde eventos de ventana hacia controlador PS/2 guest | Pendiente |
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform | Pendiente |
 | **M12**| **Firmware BIOS & UEFI** | Integración de SeaBIOS y OVMF para arranque estándar desde disco/ISO | Pendiente |
@@ -51,3 +51,11 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - `PciBus` extensible enruta configuración y puertos de E/S a dispositivos PCI y permite sondeo con `GuestMemory`; la VM agrega INTx PCI al PIC como IRQ11 (nivel) junto a PIT IRQ0 e IDE IRQ14.
 - Validación: `cargo test --workspace` y pruebas CLI (`test-network`, `test-platform`, `test-cow`, `test-boot-disk`, `test-disk`, `test-storage`, `test-serial`, `test-boot`, `test-guest`).
 - Limitaciones: sin inyección de IRQ en CPU (IDT/CLI/STI/IRET), sin MMIO/transporte moderno, sin TCP ni múltiples flujos concurrentes, sin DNS real completo, sin offloads/negociación avanzada.
+
+### Hito M9 (completado)
+- `capsule-devices::BochsVbe` implementa registros DISPI por puertos `0x01CE/0x01CF` (ID/modo/XRES/YRES/BPP/enable/bank/offset/video-memory) con latch de modo al habilitar y soporte de LFB.
+- LFB modelado en RAM guest en `0x0040_0000` (8 MiB anunciados, sin BAR MMIO dedicado) para compatibilidad con el modelo actual de dispositivos sin MMIO.
+- `capsule-vmm` expone `step_once/run_steps` y utilidades de lectura/copia de framebuffer (`vbe_framebuffer_info`, `copy_framebuffer_bgra32`) desde `GuestMemory`.
+- `capsule-gui` renderiza el framebuffer en tiempo real en ventana Win32 mediante DIB top-down 32bpp y `StretchDIBits`, ejecutando la VM por pasos en un timer de GUI; modo fallback a diagnósticos si no hay framebuffer activo.
+- Validación: `capsule.exe test-framebuffer` (programación VBE, escritura guest en LFB, verificación de píxeles y copia host BGRA32), `cargo test --workspace` y regresión CLI (`test-network`, `test-platform`, `test-cow`, `test-boot-disk`, `test-disk`, `test-storage`, `test-serial`, `test-boot`, `test-guest`).
+- Limitaciones: sin MMIO real para LFB/BAR, sin inyección de IRQ/VBlank en CPU (IDT/CLI/STI/IRET), render por sondeo, compatibilidad VBE/parcial orientada a validación inicial.
