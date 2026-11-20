@@ -10,11 +10,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "capsule-cpu"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
+ "capsule-memory",
+]
+
+[[package]]
 name = "capsule-gui"
 version = "0.1.0"
 dependencies = [
  "capsule-core",
+ "capsule-cpu",
+ "capsule-memory",
  "capsule-vmm",
+ "windows-sys",
+]
+
+[[package]]
+name = "capsule-memory"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
  "windows-sys",
 ]
 
@@ -23,6 +41,8 @@ name = "capsule-vmm"
 version = "0.1.0"
 dependencies = [
  "capsule-core",
+ "capsule-cpu",
+ "capsule-memory",
 ]
 
 [[package]]

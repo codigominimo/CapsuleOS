@@ -1,13 +1,15 @@
 //! # capsule-vmm
 //!
-//! Capa de abstracción del Monitor de Máquinas Virtuales (VMM) de CapsuleOS.
-//! Define los traits y tipos unificados que implementarán tanto el backend de aceleración
-//! por hardware (capsule-whpx) como el backend de emulación por software (capsule-emulator).
+//! Capa de abstracción y orquestación del Monitor de Máquinas Virtuales (VMM) de CapsuleOS.
 
 pub mod config;
+pub mod device;
 pub mod state;
 pub mod traits;
+pub mod vm;
 
 pub use config::VmConfig;
+pub use device::{DebugConsoleDevice, VirtualDevice};
 pub use state::{VcpuExit, VmStatus};
-pub use traits::{Error, VirtualCpu, VmBackend};
+pub use traits::{Error, VirtualCpu, VmBackend, VmmError};
+pub use vm::VirtualMachine;

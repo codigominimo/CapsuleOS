@@ -1,0 +1,10 @@
+[package]
+name = "capsule-cpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+capsule-core = { path = "../capsule-core" }
+capsule-memory = { path = "../capsule-memory" }

@@ -1,12 +1,14 @@
-//! # CapsuleOS - Runtime Principal (Hito M0)
+//! # CapsuleOS - Runtime Principal (Hito M1)
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
-//! Detecta el entorno anfitrión (Windows x64, CPU, RAM, WHPX)
-//! y presenta la interfaz gráfica en una ventana nativa de Windows.
+//! Soporta:
+//! - Modo CLI: `capsule.exe test-guest` para arrancar y verificar la VM mínima.
+//! - Modo Ventana Win32: Diagnósticos del host y estado del VMM.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
+use capsule_core::types::{ByteSize, GuestAddress};
 use capsule_core::{HostInfo, WhpxStatus, CAPSULE_VERSION};
+use capsule_vmm::{VcpuExit, VirtualMachine, VmConfig};
+use std::env;
 use std::ptr::null_mut;
 use std::sync::OnceLock;
 use windows_sys::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -64,8 +66,57 @@ fn print_cli_summary(info: &HostInfo) {
     println!("  WHPX Estado       : {:?}", info.whpx);
     println!("  Detalle           : {}", info.whpx.description());
     println!();
-    println!("Capsule Runtime: OK (VMM Foundation cargado)");
+    println!("Capsule Runtime: OK (VMM Foundation & SimpleVcpu cargados)");
     println!("==================================================");
+}
+
+fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
+    println!("VM started");
+    let config = VmConfig {
+        name: "TestGuest-M1".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(1),
+    };
+
+    let mut vm = VirtualMachine::new(config)?;
+    println!("CPU started");
+
+    // Código máquina guest de prueba (x86-64):
+    // mov eax, 0x00000042  ; B8 42 00 00 00
+    // add eax, 0x10        ; 83 C0 10       (EAX = 0x52)
+    // inc eax              ; FF C0          (EAX = 0x53)
+    // hlt                  ; F4
+    let guest_code = [
+        0xB8, 0x42, 0x00, 0x00, 0x00, // mov eax, 0x42
+        0x83, 0xC0, 0x10,             // add eax, 0x10
+        0xFF, 0xC0,                   // inc eax
+        0xF4,                         // hlt
+    ];
+
+    vm.load_code(GuestAddress::new(0), &guest_code)?;
+    vm.set_rip(0);
+
+    let exit = vm.run()?;
+    println!("Guest executed");
+
+    match exit {
+        VcpuExit::Halt => {
+            println!("Guest halted");
+            println!();
+            println!("--------------------------------------------------");
+            println!("        Verificación de Ejecución Guest M1        ");
+            println!("--------------------------------------------------");
+            println!("  Resultado en EAX  : 0x{:08X} (83 decimal)", vm.vcpu.regs.eax());
+            println!("  RIP final         : 0x{:016X}", vm.rip());
+            println!("  Estado de la VM   : {:?}", vm.status);
+            println!("--------------------------------------------------");
+        }
+        other => {
+            println!("Guest salió con estado no esperado: {:?}", other);
+        }
+    }
+
+    Ok(())
 }
 
 unsafe extern "system" fn window_proc(
@@ -152,7 +203,7 @@ unsafe extern "system" fn window_proc(
             current_y += 24;
 
             let virt_hw = if info.cpu.virtualization_supported() {
-                "Soportado por CPU (VT-x / AMD-V)"
+                "Soportado por CPU (VT-x / AMD-V / Hypervisor)"
             } else {
                 "No detectado o deshabilitado en firmware"
             };
@@ -181,15 +232,15 @@ unsafe extern "system" fn window_proc(
             let (whpx_text, whpx_color) = match info.whpx {
                 WhpxStatus::Available => (
                     "WHPX: DISPONIBLE (Aceleración nativa de hardware activa)",
-                    rgb(74, 222, 128), // Verde claro
+                    rgb(74, 222, 128),
                 ),
                 WhpxStatus::FeatureNotEnabled => (
                     "WHPX: DLL DETECTADA, PERO HIPERVISOR INACTIVO (Modo emulador disponible)",
-                    rgb(251, 191, 36), // Amarillo / Ámbar
+                    rgb(251, 191, 36),
                 ),
                 WhpxStatus::NotInstalled => (
                     "WHPX: NO INSTALADO (Modo emulador disponible)",
-                    rgb(248, 113, 113), // Rojo claro
+                    rgb(248, 113, 113),
                 ),
             };
 
@@ -202,18 +253,26 @@ unsafe extern "system" fn window_proc(
             draw_text_line(hdc, info.whpx.description(), 48, current_y, rect.right - 48, 22, DT_LEFT);
             current_y += 34;
 
-            // Tarjeta 5: Estado de Capsule Runtime
-            current_y = draw_card_header(hdc, "Capsule Runtime Status", 32, current_y, rect.right - 32, subtitle_font);
+            // Tarjeta 5: Estado de Capsule Runtime & VMM
+            current_y = draw_card_header(hdc, "Capsule Runtime & VMM Status", 32, current_y, rect.right - 32, subtitle_font);
             SelectObject(hdc, body_font);
             SetTextColor(hdc, rgb(74, 222, 128));
-            draw_text_line(hdc, "OK — Arquitectura VMM modular lista (Hito M0 completado)", 48, current_y, rect.right - 48, 22, DT_LEFT);
+            draw_text_line(
+                hdc,
+                "OK — VMM & vCPU Operacionales (Hito M1 completado: 'capsule.exe test-guest')",
+                48,
+                current_y,
+                rect.right - 48,
+                22,
+                DT_LEFT,
+            );
             current_y += 24;
 
             SetTextColor(hdc, rgb(140, 150, 170));
             SelectObject(hdc, code_font);
             draw_text_line(
                 hdc,
-                "Siguiente paso: M1 — Ejecución del primer guest elemental en vCPU",
+                "Siguiente paso: M2 — Expansión completa de instrucciones de CPU x86-64",
                 48,
                 current_y,
                 rect.right - 48,
@@ -236,7 +295,6 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_KEYDOWN => {
-            // Tecla ESC (0x1B) para cerrar la ventana
             if wparam == 0x1B {
                 DestroyWindow(hwnd);
             }
@@ -265,11 +323,11 @@ unsafe fn create_gdi_font(height: i32, weight: i32) -> HFONT {
         0,
         0,
         0,
-        0, // DEFAULT_CHARSET
-        0, // OUT_DEFAULT_PRECIS
-        0, // CLIP_DEFAULT_PRECIS
-        5, // CLEARTYPE_QUALITY
-        0, // DEFAULT_PITCH | FF_DONTCARE
+        0,
+        0,
+        0,
+        5,
+        0,
         font_name.as_ptr(),
     )
 }
@@ -283,10 +341,9 @@ unsafe fn draw_card_header(
     font: HFONT,
 ) -> i32 {
     SelectObject(hdc, font);
-    SetTextColor(hdc, rgb(96, 165, 250)); // Azul brillante
+    SetTextColor(hdc, rgb(96, 165, 250));
     draw_text_line(hdc, title, x, y, max_x, 22, DT_LEFT);
 
-    // Línea sutil bajo el subtítulo
     let card_line = CreateSolidBrush(rgb(40, 44, 55));
     let line_rect = RECT {
         left: x,
@@ -326,9 +383,19 @@ unsafe fn draw_text_line(
 }
 
 fn main() {
-    // Si se invoca desde una consola o PowerShell, nos acoplamos a la consola para imprimir el resumen
+    let args: Vec<String> = env::args().collect();
+
+    // Acoplamos a la consola para imprimir mensajes
     unsafe {
         AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+
+    if args.iter().any(|arg| arg == "test-guest" || arg == "--test-guest") {
+        if let Err(e) = run_test_guest() {
+            eprintln!("Error en test-guest: {}", e);
+            std::process::exit(1);
+        }
+        return;
     }
 
     let host_info = get_host_info();
