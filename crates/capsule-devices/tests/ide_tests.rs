@@ -291,6 +291,7 @@ fn ide_read_write_out_of_range_lba_sets_error() {
     let st = ide.read_io(0x1F7, 1);
     assert_ne!(st & 0x01, 0, "READ fuera de rango debe señalizar ERR");
     assert_eq!(st & 0x08, 0, "READ fuera de rango no debe activar DRQ");
+    assert_eq!(ide.read_io(0x1F1, 1) & 0x10, 0x10, "READ fuera de rango debe reportar IDNF");
 
     // WRITE fuera de rango
     ide.write_io(0x1F6, 0xE0, 1);
@@ -302,6 +303,7 @@ fn ide_read_write_out_of_range_lba_sets_error() {
     let st = ide.read_io(0x1F7, 1);
     assert_ne!(st & 0x01, 0, "WRITE fuera de rango debe señalizar ERR");
     assert_eq!(st & 0x08, 0, "WRITE fuera de rango no debe activar DRQ");
+    assert_eq!(ide.read_io(0x1F1, 1) & 0x10, 0x10, "WRITE fuera de rango debe reportar IDNF");
 }
 
 #[test]
@@ -320,4 +322,43 @@ fn ide_read_write_requires_lba_mode() {
     let st = ide.read_io(0x1F7, 1);
     assert_ne!(st & 0x01, 0, "READ en modo CHS debe ser rechazado en esta implementación LBA28");
     assert_eq!(st & 0x08, 0);
+    assert_eq!(ide.read_io(0x1F1, 1) & 0x04, 0x04, "Modo no soportado debe reportar ABRT");
+}
+
+#[test]
+fn ide_new_command_while_drq_active_replaces_pending_transfer() {
+    let disk = MemoryDisk::new(16, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 0, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1); // READ -> DRQ
+
+    let st = ide.read_io(0x1F7, 1); // limpia IRQ pendiente si existiera
+    assert_eq!(st & 0x08, 0x08, "READ debe activar DRQ");
+
+    // Emitir nuevo comando con DRQ activo: debe cancelar la transferencia pendiente y ejecutar el nuevo comando.
+    ide.write_io(0x1F7, 0xE7, 1); // FLUSH
+    assert!(ide.irq_pending(), "FLUSH completado debe dejar condición de IRQ pendiente");
+    let st_alt = ide.read_io(0x3F6, 1); // alt status no limpia IRQ
+    assert_eq!(st_alt & 0x01, 0, "El nuevo comando debe poder ejecutarse sin ERR si es válido");
+    assert_eq!(st_alt & 0x08, 0, "La transferencia PIO anterior debe quedar cancelada (DRQ=0)");
+    assert_eq!(ide.read_io(0x1F1, 1), 0x00, "No debe reportar ABRT al reemplazar una transferencia pendiente");
+
+    let st = ide.read_io(0x1F7, 1); // limpia IRQ pendiente
+    assert_eq!(st & 0x01, 0);
+    assert!(!ide.irq_pending(), "Lectura de status debe limpiar la IRQ pendiente");
+
+    // El dispositivo debe seguir operativo
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 0, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1); // READ
+    let st = ide.read_io(0x1F7, 1);
+    assert_eq!(st & 0x08, 0x08, "Tras cancelar DRQ, el controlador debe aceptar nuevos comandos");
 }

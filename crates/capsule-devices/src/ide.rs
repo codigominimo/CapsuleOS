@@ -32,6 +32,7 @@ const SR_DRDY: u8 = 0x40;
 const SR_BSY: u8 = 0x80;
 
 const ERR_ABRT: u8 = 0x04;
+const ERR_IDNF: u8 = 0x10;
 
 const CMD_READ_SECTORS: u8 = 0x20;
 const CMD_WRITE_SECTORS: u8 = 0x30;
@@ -203,14 +204,22 @@ impl IdeController {
         }
     }
 
-    fn set_error_abort(&mut self) {
-        self.error = ERR_ABRT;
+    fn set_error(&mut self, err: u8) {
+        self.error = err;
         self.status = SR_DRDY | SR_DSC | SR_ERR;
         self.data_buf.clear();
         self.data_index = 0;
         self.pio_write = false;
         self.sectors_remaining = 0;
         self.irq_pending = true;
+    }
+
+    fn set_error_abort(&mut self) {
+        self.set_error(ERR_ABRT);
+    }
+
+    fn set_error_idnf(&mut self) {
+        self.set_error(ERR_IDNF);
     }
 
     fn validate_lba28_request(&mut self, lba: u64, count: u16) -> bool {
@@ -225,7 +234,7 @@ impl IdeController {
         };
         let end = lba.saturating_add(count as u64);
         if lba > 0x0FFF_FFFF || end > 0x1000_0000 || end > drive.disk.sector_count() {
-            self.set_error_abort();
+            self.set_error_idnf();
             return false;
         }
         true
@@ -284,25 +293,17 @@ impl IdeController {
         let count = self.sectors_remaining as u32;
         let lba = self.current_lba;
         let res = if self.selected_is_slave() {
-            if self.slave.is_none() {
+            let Some(drive) = self.slave.as_mut() else {
                 self.set_error_abort();
                 return;
-            }
-            self.slave
-                .as_mut()
-                .unwrap()
-                .disk
-                .write_sectors(lba, count, &self.data_buf)
+            };
+            drive.disk.write_sectors(lba, count, &self.data_buf)
         } else {
-            if self.master.is_none() {
+            let Some(drive) = self.master.as_mut() else {
                 self.set_error_abort();
                 return;
-            }
-            self.master
-                .as_mut()
-                .unwrap()
-                .disk
-                .write_sectors(lba, count, &self.data_buf)
+            };
+            drive.disk.write_sectors(lba, count, &self.data_buf)
         };
         match res {
             Ok(()) => {
@@ -366,6 +367,19 @@ impl IdeController {
     }
 
     fn execute_command(&mut self, cmd: u8) {
+        // Una nueva orden inicia un nuevo ciclo de comando; limpiar IRQ pendiente previa.
+        self.irq_pending = false;
+
+        // Si hay una transferencia PIO pendiente, el nuevo comando la reemplaza.
+        // (Comportamiento tolerante: se descarta el buffer/DRQ sin señalizar error.)
+        if (self.status & SR_DRQ) != 0 {
+            self.status &= !SR_DRQ;
+            self.data_buf.clear();
+            self.data_index = 0;
+            self.pio_write = false;
+            self.sectors_remaining = 0;
+        }
+
         match cmd {
             CMD_IDENTIFY => self.do_identify(),
             CMD_READ_SECTORS => {

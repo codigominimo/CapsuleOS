@@ -453,27 +453,29 @@ fn run_test_boot_disk() -> Result<(), Box<dyn std::error::Error>> {
     let sector_size = DEFAULT_SECTOR_SIZE as usize;
 
     let sector1: Vec<u8> = (0..sector_size).map(|i| 0x5Au8 ^ (i as u8)).collect();
+    let sector2: Vec<u8> = (0..sector_size).map(|i| 0xA3u8 ^ (i as u8).wrapping_mul(7)).collect();
 
-    // Crear disco RAW: LBA1 = datos, LBA0 = boot sector
+    // Crear disco RAW: LBA1-2 = datos (etapa siguiente), LBA0 = boot sector (etapa 0)
     let mut disk = RawDiskImage::create(&path, 16, DEFAULT_SECTOR_SIZE)?;
     disk.write_sectors(1, 1, &sector1)?;
+    disk.write_sectors(2, 1, &sector2)?;
     disk.flush()?;
 
-    // Boot sector: leer LBA1 por ATA PIO a 0x1000 y detenerse (RIP inicia en 0x7C00)
+    // Boot sector: cargar 2 sectores desde LBA1 a 0x1000 (lectura ATA PIO multi-sector) y detenerse.
     let mut boot_sector = vec![0u8; sector_size];
     let mut code: Vec<u8> = Vec::new();
     // Select master, LBA
     code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
-    // READ SECTORS: count=1, lba=1, cmd=0x20
-    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    // READ SECTORS: count=2, lba=1, cmd=0x20
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x02, 0xEE]);
     code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
     code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
     code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
     code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
-    // Read loop: 128 dwords 0x1F0 -> 0x1000
+    // Read loop: 256 dwords (2 sectores) 0x1F0 -> 0x1000
     code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
     code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=dst
-    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
+    code.extend_from_slice(&[0xB9, 0x00, 0x01, 0x00, 0x00]); // ecx=256
     let read_loop = code.len();
     code.extend_from_slice(&[0xED, 0x89, 0x03, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
     let rel = (read_loop as i32) - ((code.len() as i32) + 2);
@@ -510,17 +512,18 @@ fn run_test_boot_disk() -> Result<(), Box<dyn std::error::Error>> {
     let exit = vm.run()?;
     assert_eq!(exit, VcpuExit::Halt, "El boot sector debe terminar con HLT");
 
-    let mut out = vec![0u8; sector_size];
+    let mut out = vec![0u8; sector_size * 2];
     vm.memory.read_bytes(GuestAddress::new(0x1000), &mut out)?;
-    assert_eq!(out, sector1, "El boot sector no leyo LBA1 correctamente");
+    assert_eq!(&out[..sector_size], &sector1[..], "Boot: LBA1 cargado incorrectamente");
+    assert_eq!(&out[sector_size..], &sector2[..], "Boot: LBA2 cargado incorrectamente (carga multi-sector)");
 
     let _ = fs::remove_file(&path);
 
     println!("  [OK] Sector de arranque cargado en 0x7C00 (RIP inicial correcto)");
-    println!("  [OK] Boot code ejecuto lectura ATA PIO de LBA1 al buffer guest");
+    println!("  [OK] Boot code ejecutó lectura ATA PIO multi-sector (LBA1-2 -> 0x1000)");
     println!("--------------------------------------------------");
     println!("  Arranque desde disco: EXITO");
-    println!("  Flujo: LBA0 -> 0x7C00, ejecutar boot sector, leer LBA1 via IDE");
+    println!("  Flujo: LBA0 -> 0x7C00, boot sector carga 2 sectores via IDE PIO");
     println!("==================================================");
 
     Ok(())
