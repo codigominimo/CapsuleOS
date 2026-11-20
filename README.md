@@ -101,14 +101,14 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Emulación UART 16550 (COM1, 0x3F8) integrada como dispositivo virtual de la VM.
   - Soporte de E/S por puerto para salida de consola guest (`console=ttyS0` / earlyprintk).
   - Comando CLI de validación: `capsule.exe test-serial`.
-* [ ] **Hito M5 - Virtual Disk (RAW/VHD) [en progreso]**:
+* [x] **Hito M5 - Virtual Disk (RAW/VHD)**:
   - Abstracción `BlockDevice` y backends `MemoryDisk`, `RawDiskImage`, `VhdFixedDisk` (fixed).
-  - Controlador ATA/IDE PIO primario (canal maestro, LBA28): `IDENTIFY`, `READ/WRITE SECTORS`, `FLUSH CACHE`.
-  - Modelo de IRQ simplificado (condición pendiente, `nIEN`) y software reset (`SRST`) en el controlador.
-  - Integración VM: `attach_primary_master_disk`, E/S PIO 8/16/32-bit, y flujo mínimo de arranque desde disco (`boot_from_primary_master_disk`: carga LBA0 en `0x7C00`, `RIP=0x7C00`).
-  - Validación: transferencias PIO (incl. multi-sector y `sector_count=0` => 256 sectores), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, errores ATA básicos (`IDNF`/`ABRT`, unidad ausente/IDENTIFY slave), y boot sector con carga multi-sector vía IDE.
-  - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk [path]` (self-test o arranque experimental de imagen RAW 512-byte).
-  - Pendiente: robustecer ATA (cableado de INTRQ real a PIC/APIC, semántica de errores/registros más completa, mayor compatibilidad), arranque de cargas reales desde disco/firmware (solape M12), selección/configuración de disco por CLI/config, y evolución a `virtio-blk` / formatos dinámicos o COW (M6).
+  - Controlador ATA/IDE PIO primario (canal maestro, LBA28): `IDENTIFY`, `READ/WRITE SECTORS` (y `READ/WRITE MULTIPLE`), `SET MULTIPLE MODE` (compat.), `FLUSH CACHE`.
+  - Modelo de IRQ simplificado (condición pendiente, `nIEN`, status vs alt-status) y software reset (`SRST`), con manejo de unidad ausente/slave y errores básicos (`IDNF`/`ABRT`).
+  - Integración VM: `attach_primary_master_disk`, E/S PIO 8/16/32-bit y arranque mínimo desde disco (`boot_from_primary_master_disk`: carga LBA0 en `0x7C00`, `RIP=0x7C00`).
+  - Validación: transferencias PIO (incl. multi-sector y `sector_count=0` => 256 sectores), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, y boot sector con carga multi-sector vía IDE.
+  - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk [path]` (self-test o arranque experimental de imagen RAW/VHD fixed 512-byte).
+  - Alcance diferido (hitossiguientes): INTRQ real vía PIC/APIC (M7), mayor compatibilidad ATA/drivers y arranque real desde disco/firmware (M12), y formatos dinámicos/COW o `virtio-blk` (M6).
 
 ---
 
@@ -166,7 +166,7 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 # Self-test sintético (LBA0 -> 0x7C00, carga multi-sector LBA1-2 via ATA PIO)
 .\target\release\capsule.exe test-boot-disk
 
-# Arranque experimental de una imagen RAW externa (sector 512 bytes)
+# Arranque experimental de una imagen externa RAW o VHD fixed (sector 512 bytes)
 .\target\release\capsule.exe test-boot-disk .\ruta\disco.img
 ```
 

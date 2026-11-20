@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M5 en progreso)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M5 completados)
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
 //! Comandos CLI:
@@ -7,7 +7,7 @@
 //! - `capsule.exe test-serial`    : Verificación del puerto serie UART 16550 (COM1 / earlyprintk).
 //! - `capsule.exe test-storage`   : Verificación de almacenamiento de bloques (RAW y VHD fixed).
 //! - `capsule.exe test-disk`      : Verificación de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
-//! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de una imagen RAW 512-byte.
+//! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de imagen RAW/VHD fixed 512-byte.
 //! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
@@ -443,15 +443,24 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn boot_raw_disk_image(path: &str, vm_name: &str) -> Result<VcpuExit, Box<dyn std::error::Error>> {
+fn open_disk_image_for_boot(path: &str) -> Result<Box<dyn BlockDevice>, Box<dyn std::error::Error>> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".vhd") {
+        Ok(Box::new(VhdFixedDisk::open(path, DEFAULT_SECTOR_SIZE)?))
+    } else {
+        Ok(Box::new(RawDiskImage::open(path, DEFAULT_SECTOR_SIZE)?))
+    }
+}
+
+fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<dyn std::error::Error>> {
     let config = VmConfig {
         name: vm_name.to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
     };
     let mut vm = VirtualMachine::new(config)?;
-    let disk = RawDiskImage::open(path, DEFAULT_SECTOR_SIZE)?;
-    vm.boot_from_primary_master_disk(Box::new(disk))?;
+    let disk = open_disk_image_for_boot(path)?;
+    vm.boot_from_primary_master_disk(disk)?;
     println!("  [OK] LBA0 cargado en 0x7C00, RIP=0x7C00 (imagen: {path})");
     let exit = vm.run()?;
     Ok(exit)
@@ -462,7 +471,7 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
         println!("==================================================");
         println!("   Arranque desde Disco (imagen externa, M5)     ");
         println!("==================================================");
-        let exit = boot_raw_disk_image(path, "BootFromDiskImage")?;
+        let exit = boot_disk_image_from_path(path, "BootFromDiskImage")?;
         println!("  Resultado de ejecucion: {:?}", exit);
         match exit {
             VcpuExit::Halt => {
@@ -482,7 +491,7 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
         }
         println!("--------------------------------------------------");
         println!("  Arranque desde disco (imagen): completado");
-        println!("  Nota: CPU emulada limitada; bootloaders reales pueden requerir mas ISA/dispositivos.");
+        println!("  Nota: Soporta RAW y VHD fixed (512B). CPU/ISA y firmware limitados; bootloaders reales pueden requerir M12/M7.");
         println!("==================================================");
         return Ok(());
     }
@@ -742,7 +751,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(74, 222, 128));
             draw_text_line(
                 hdc,
-                "OK - Consola UART 16550 & Linux Direct Boot (Hitos M0-M4 completados)",
+                "OK - UART 16550, Linux Direct Boot y Virtual Disk ATA/IDE PIO (Hitos M0-M5 completados)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -751,10 +760,10 @@ unsafe extern "system" fn window_proc(
             );
             current_y += 24;
 
-            SetTextColor(hdc, rgb(251, 191, 36));
+            SetTextColor(hdc, rgb(220, 225, 235));
             draw_text_line(
                 hdc,
-                "En progreso - M5: ATA/IDE PIO (IRQ/nIEN/SRST), RAW/VHD, boot sector multi-sector (test-disk/test-boot-disk [img])",
+                "M5: RAW/VHD fixed, READ/WRITE/FLUSH/MULTIPLE, IRQ/nIEN/SRST, boot LBA0->0x7C00 (test-disk/test-boot-disk)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -767,7 +776,7 @@ unsafe extern "system" fn window_proc(
             SelectObject(hdc, code_font);
             draw_text_line(
                 hdc,
-                "Siguiente paso: robustecer ATA (IRQ/multi-sector) y habilitar arranque desde disco",
+                "Siguiente paso: M6 (COW/dinamicos), M7 (PIC/APIC+INTRQ) y M12 (firmware/boot real)",
                 48,
                 current_y,
                 rect.right - 48,

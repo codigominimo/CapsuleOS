@@ -104,11 +104,11 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
     * Bus PCI sintético para descubrimiento de dispositivos periféricos.
 
 * **`capsule-storage`**:
-  * Abstracción de medios de almacenamiento:
-    * Formatos soportados: RAW, VHD (Fixed y Dynamic), VHDX, QCOW2.
+  * Abstracción de medios de almacenamiento (`BlockDevice`) y backends implementados: RAM (`MemoryDisk`), RAW y VHD fixed (512-byte).
+  * Formatos/funciones planeadas: VHD dynamic, VHDX, QCOW2 y capa COW/overlay (M6).
   * Controladores de almacenamiento virtual:
-    * IDE / ATA heredado (para BIOS inicial / compatibilidad máxima).
-    * `virtio-blk` para alto rendimiento en Linux y Windows modernos con drivers VirtIO.
+    * IDE / ATA PIO primario (maestro, LBA28) implementado para M5 (sin DMA/intrínseco INTRQ cableado a PIC/APIC todavía).
+    * `virtio-blk` planeado para alto rendimiento en guests modernos (post-M5).
 
 * **`capsule-display`**:
   * Framebuffer gráfico lineal en memoria (formato BGRA32 / BGR24).

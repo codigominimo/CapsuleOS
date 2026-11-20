@@ -471,3 +471,74 @@ fn ide_sector_count_zero_means_256_sectors_pio() {
         "Último sector escrito (LBA265) incorrecto"
     );
 }
+
+#[test]
+fn ide_set_multiple_mode_and_multiple_pio_commands() {
+    let mut disk = MemoryDisk::new(32, DEFAULT_SECTOR_SIZE).expect("disk");
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+
+    let mut src = vec![0u8; sector_size * 2];
+    for (i, b) in src.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(5) ^ 0x3C;
+    }
+    disk.write_sectors(4, 2, &src).unwrap();
+
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // SET MULTIPLE MODE (0xC6) - compatibilidad básica
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F7, 0xC6, 1);
+    let st = ide.read_io(0x1F7, 1);
+    assert_eq!(st & 0x01, 0, "SET MULTIPLE MODE no debe reportar error");
+
+    // READ MULTIPLE (0xC4)
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 2, 1);
+    ide.write_io(0x1F3, 4, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0xC4, 1);
+    let st = ide.read_io(0x1F7, 1);
+    assert_eq!(st & 0x08, 0x08, "READ MULTIPLE debe activar DRQ");
+    let mut out = vec![0u8; sector_size * 2];
+    for i in (0..out.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        out[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(out, src, "READ MULTIPLE debe devolver los sectores solicitados");
+
+    // WRITE MULTIPLE (0xC5)
+    let mut payload = vec![0u8; sector_size * 2];
+    for (i, b) in payload.iter_mut().enumerate() {
+        *b = 0xAA ^ (i as u8);
+    }
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 2, 1);
+    ide.write_io(0x1F3, 6, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0xC5, 1);
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x08, 0x08, "WRITE MULTIPLE debe activar DRQ");
+    for i in (0..payload.len()).step_by(4) {
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&payload[i..i + 4]);
+        ide.write_io(0x1F0, u32::from_le_bytes(bytes), 4);
+    }
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x01, 0, "WRITE MULTIPLE no debe reportar error");
+
+    // Verificar escritura
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 2, 1);
+    ide.write_io(0x1F3, 6, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1);
+    let mut verify = vec![0u8; sector_size * 2];
+    for i in (0..verify.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        verify[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(verify, payload, "WRITE MULTIPLE debe persistir los datos");
+}

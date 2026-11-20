@@ -36,6 +36,9 @@ const ERR_IDNF: u8 = 0x10;
 
 const CMD_READ_SECTORS: u8 = 0x20;
 const CMD_WRITE_SECTORS: u8 = 0x30;
+const CMD_READ_MULTIPLE: u8 = 0xC4;
+const CMD_WRITE_MULTIPLE: u8 = 0xC5;
+const CMD_SET_MULTIPLE_MODE: u8 = 0xC6;
 const CMD_FLUSH_CACHE: u8 = 0xE7;
 const CMD_IDENTIFY: u8 = 0xEC;
 
@@ -382,7 +385,7 @@ impl IdeController {
 
         match cmd {
             CMD_IDENTIFY => self.do_identify(),
-            CMD_READ_SECTORS => {
+            CMD_READ_SECTORS | CMD_READ_MULTIPLE => {
                 if !self.selected_drive_present() {
                     self.set_error_abort();
                     return;
@@ -394,7 +397,7 @@ impl IdeController {
                 }
                 self.prepare_read(lba, count);
             }
-            CMD_WRITE_SECTORS => {
+            CMD_WRITE_SECTORS | CMD_WRITE_MULTIPLE => {
                 if !self.selected_drive_present() {
                     self.set_error_abort();
                     return;
@@ -422,6 +425,16 @@ impl IdeController {
                     }
                     Err(_) => self.set_error_abort(),
                 }
+            }
+            CMD_SET_MULTIPLE_MODE => {
+                // Compatibilidad básica: aceptar configuración de bloque múltiple (PIO simplificado).
+                if !self.selected_drive_present() {
+                    self.set_error_abort();
+                    return;
+                }
+                self.status = SR_DRDY | SR_DSC;
+                self.error = 0;
+                self.irq_pending = true;
             }
             _ => {
                 // Comando no soportado
