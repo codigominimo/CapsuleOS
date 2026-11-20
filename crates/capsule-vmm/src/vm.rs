@@ -7,8 +7,9 @@ use crate::traits::VmmError;
 use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
-use capsule_devices::{Uart16550, COM1_BASE};
+use capsule_devices::{IdeController, Uart16550, COM1_BASE};
 use capsule_memory::GuestMemory;
+use capsule_storage::BlockDevice;
 
 pub struct VirtualMachine {
     pub config: VmConfig,
@@ -46,6 +47,24 @@ impl VirtualMachine {
     /// Registra un dispositivo virtual en la máquina.
     pub fn add_device(&mut self, device: Box<dyn VirtualDevice>) {
         self.devices.push(device);
+    }
+
+    /// Adjunta un disco al canal IDE primario como unidad maestra (master).
+    /// Registra el controlador ATA/IDE PIO (0x1F0-0x1F7, 0x3F6) si aún no existe.
+    pub fn attach_primary_master_disk(
+        &mut self,
+        disk: Box<dyn BlockDevice>,
+    ) -> Result<(), VmmError> {
+        let ide_port = 0x1F0u16;
+        if self.devices.iter().any(|d| d.handles_port(ide_port)) {
+            return Err(VmmError::InitializationFailed(
+                "El controlador IDE primario ya está registrado".to_string(),
+            ));
+        }
+        let mut ide = IdeController::new_primary();
+        ide.attach_master(disk);
+        self.devices.push(Box::new(ide));
+        Ok(())
     }
 
     /// Carga un bloque de código máquina ejecutable en la memoria física del guest.
@@ -129,7 +148,14 @@ impl VirtualMachine {
                         if dev.handles_port(port) {
                             let val = dev.read_io(port, size);
                             match size {
-                                1 => self.vcpu.regs.rax = (self.vcpu.regs.rax & !0xFF) | (val as u64 & 0xFF),
+                                1 => {
+                                    self.vcpu.regs.rax =
+                                        (self.vcpu.regs.rax & !0xFF) | (val as u64 & 0xFF)
+                                }
+                                2 => {
+                                    self.vcpu.regs.rax =
+                                        (self.vcpu.regs.rax & !0xFFFF) | (val as u64 & 0xFFFF)
+                                }
                                 4 => self.vcpu.regs.set_eax(val),
                                 _ => {}
                             }

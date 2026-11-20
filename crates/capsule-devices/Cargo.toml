@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 capsule-core = { path = "../capsule-core" }
+capsule-storage = { path = "../capsule-storage" }

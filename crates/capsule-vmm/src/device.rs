@@ -1,6 +1,6 @@
 //! Abstracción de dispositivos virtuales (I/O ports y MMIO).
 
-use capsule_devices::Uart16550;
+use capsule_devices::{IdeController, Uart16550};
 
 pub trait VirtualDevice: Send {
     fn name(&self) -> &str;
@@ -25,6 +25,25 @@ impl VirtualDevice for Uart16550 {
 
     fn write_io(&mut self, port: u16, data: u32, _size: u8) {
         self.write_io(port, (data & 0xFF) as u8);
+    }
+}
+
+/// Implementación del trait VirtualDevice para el controlador ATA/IDE PIO primario.
+impl VirtualDevice for IdeController {
+    fn name(&self) -> &str {
+        "IDE_PRIMARY"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        self.handles_port(port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        IdeController::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        IdeController::write_io(self, port, data, size);
     }
 }
 
