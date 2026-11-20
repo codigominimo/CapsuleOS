@@ -1,4 +1,4 @@
-//! Abstracción de dispositivos virtuales (I/O ports y MMIO).
+//! Abstracción de dispositivos virtuales (I/O ports).
 
 use capsule_devices::{IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
 use std::any::Any;
@@ -159,6 +159,8 @@ impl VirtualDevice for RtcCmos {
 }
 
 /// Implementación del trait VirtualDevice para el bus PCI (configuración mechanism #1).
+/// El sondeo de dispositivos PCI con acceso a memoria guest (p.ej. virtio-net/NAT) se realiza
+/// explícitamente desde el bucle de la VM (`PciBus::poll_devices`), ya que requiere `GuestMemory`.
 impl VirtualDevice for PciBus {
     fn name(&self) -> &str {
         "PCI_BUS"

@@ -73,7 +73,8 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
         fn run_vcpu(&mut self, id: usize) -> Result<VcpuExit, VmmError>;
     }
     ```
-  * Despacho de salidas de la VM (VM Exits: Port I/O, MMIO, HLT, interrupciones, excepciones).
+  * Despacho de salidas de la VM (VM Exits: Port I/O, HLT, errores) y, en el backend software actual, avance por tick/sondeo de dispositivos de plataforma y PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, virtqueues/NAT) con acceso a memoria guest.
+  * Nota: MMIO y entrega/inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET) pendientes.
 
 * **`capsule-cpu`**:
   * Definición del estado de la CPU x86-64: registros de propósito general (RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP, R8-R15), puntero de instrucción (RIP), registro de banderas (RFLAGS), registros de control (CR0, CR2, CR3, CR4, CR8), registros de segmento (CS, DS, SS, ES, FS, GS), tablas descriptores (GDTR, IDTR, LDTR, TR) y MSRs esenciales.
@@ -96,13 +97,14 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Mapeo de regiones RAM, MMIO y ROM reservada.
 
 * **`capsule-devices`**:
-  * Enrutador de buses: Port I/O (espacio de direcciones de 16 bits `in`/`out`) y MMIO.
-  * Dispositivos de plataforma implementados (M4-M7):
+  * Enrutador de buses: Port I/O (espacio de direcciones de 16 bits `in`/`out`).
+  * Dispositivos de plataforma implementados (M4-M8):
     * Puerto serie UART 16550 (COM1 en 0x3F8) para salida de consola y depuración del kernel.
     * Controlador de interrupciones PIC 8259 dual (maestro/esclavo) con ICW/OCW, IMR/ISR/IRR, cascada y EOI.
     * Temporizador PIT 8254 (canales 0-2, modos básicos) y RTC/CMOS MC146818 mínimo (0x70/0x71).
-    * Bus PCI simplificado (mecanismo #1 de configuración, `0xCF8/0xCFC`) con enumeración básica de bus vacío.
-  * Pendiente: inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET), APIC local/IO-APIC, dispositivos PCI reales y mayor fidelidad temporal.
+    * Bus PCI extensible (mecanismo #1, `0xCF8/0xCFC`) con enrutamiento de config/E/S, registro de funciones PCI y sondeo de dispositivos con acceso a memoria guest.
+    * NIC `VirtioNetPci` transitional (legacy PCI I/O BAR0, split virtqueues RX/TX) integrada al bus PCI; sin MMIO.
+  * Pendiente: MMIO, inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET), APIC local/IO-APIC y mayor fidelidad temporal.
 
 * **`capsule-storage`**:
   * Abstracción de medios de almacenamiento (`BlockDevice`) y backends implementados: RAM (`MemoryDisk`), RAW, VHD fixed (512-byte) y overlay COW (`CowOverlayDisk`, bitmap por sector, base inmutable).
@@ -123,8 +125,11 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Conversión de mensajes de entrada Win32 (`WM_KEYDOWN`, `WM_KEYUP`, `WM_MOUSEMOVE`, etc.) a scan codes PS/2 (Scan Code Set 1 y 2).
 
 * **`capsule-network`**:
-  * Dispositivo de red `virtio-net`.
-  * Pila de red en modo usuario (User-mode NAT) para proporcionar conectividad a Internet al guest sin necesidad de controladores TAP/Wintun ni privilegios de administrador.
+  * Pila de red en modo usuario (`UserModeNat`, M8) sin TAP/Wintun ni privilegios de administrador:
+    * Respuestas ARP para gateway/DNS virtual, DHCP básico (OFFER/ACK), ICMP echo a IPs virtuales.
+    * Reenvío UDP saliente mediante sockets del host con retorno de respuestas al guest (flujo UDP pendiente limitado).
+  * Integrada con `capsule-devices::VirtioNetPci`; procesamiento por sondeo desde el bucle de la VM con acceso a memoria guest.
+  * Pendiente: TCP, múltiples flujos/conexiones concurrentes, NAT/traducción completa, DNS real y mayor fidelidad de pila.
 
 ### 2.4. Arranque y Firmware
 * **`capsule-firmware`**:

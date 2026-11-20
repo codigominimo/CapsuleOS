@@ -66,6 +66,9 @@ CapsuleOS/
 │   ├── capsule-core/               # Primitivas, direcciones GPA/HVA e introspección host
 │   ├── capsule-memory/             # Gestión de memoria física guest con VirtualAlloc
 │   ├── capsule-cpu/                # Registros arquitecturales x86-64 y vCPU elemental
+│   ├── capsule-devices/            # Dispositivos de plataforma (UART, PIC/PIT/RTC, PCI, IDE, virtio-net)
+│   ├── capsule-network/            # Pila NAT en modo usuario para red guest
+│   ├── capsule-storage/            # Discos RAW/VHD y overlay COW
 │   ├── capsule-vmm/                # Orquestador de la VM, ciclo de vida y dispositivos
 │   └── capsule-gui/                # Aplicación ejecutable (capsule.exe) y ventana Win32
 ```
@@ -118,10 +121,16 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - PIC 8259 dual (maestro/esclavo) con ICW/OCW, IMR/ISR/IRR, cascada y EOI; IRQ0 (PIT) e IRQ14 (IDE primario, nivel según `irq_pending && !nIEN`) reflejadas en el PIC.
   - PIT 8254 (canales 0-2, modos básicos) con avance por tick de vCPU y pulsos IRQ0 (canal 0).
   - RTC/CMOS MC146818 mínimo (puertos `0x70/0x71`): hora/fecha básica y RAM CMOS preservada.
-  - Bus PCI simplificado (mecanismo #1, `0xCF8/0xCFC`) con enumeración básica de bus vacío (`0xFFFF_FFFF`).
+  - Bus PCI extensible (mecanismo #1, `0xCF8/0xCFC`) con enrutamiento de configuración/E/S y sondeo de dispositivos con acceso a memoria guest.
   - Integración en VM: dispositivos de plataforma registrados por defecto y refresco de timers/IRQs en el bucle de ejecución.
   - Comando CLI de validación: `capsule.exe test-platform`.
   - Nota: la inyección de interrupciones en la CPU software (IDT/CLI/STI/IRET) no está implementada aún; los guests deben usar sondeo (polling).
+* [x] **Hito M8 - Networking (User-mode NAT / virtio-net)**:
+  - Crate `capsule-network` con `UserModeNat`: ARP para gateway/DNS virtual, DHCP básico (OFFER/ACK), ICMP echo (gateway/DNS virtual) y reenvío UDP saliente mediante sockets del host (flujo UDP pendiente limitado).
+  - Dispositivo `VirtioNetPci` transitional PCI legacy (I/O BAR0, split virtqueues RX/TX en memoria guest) en BDF `00:03.0`, operado por sondeo desde la VM (sin MMIO ni drivers host).
+  - IRQ INTx PCI agregada señalada en nivel al PIC como IRQ11; procesamiento de virtqueues/NAT realizado en el bucle de ejecución.
+  - Comando CLI de validación: `capsule.exe test-network`.
+  - Alcance diferido: TCP, múltiples flujos/conexiones concurrentes, DNS real completo, features/offloads avanzados, inyección de IRQ en CPU (IDT/CLI/STI/IRET) y transporte moderno/MMIO.
 
 ---
 
@@ -194,6 +203,12 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 ```powershell
 # Valida PIC 8259, PIT 8254, RTC/CMOS y bus PCI (config 0xCF8/0xCFC), e integración básica en VM
 .\target\release\capsule.exe test-platform
+```
+
+### Verificar red en modo usuario (NAT + virtio-net PCI, Hito M8)
+```powershell
+# Valida ARP/ICMP en NAT de usuario y enumeración/configuración básica de virtio-net (00:03.0, BAR0 I/O, MAC)
+.\target\release\capsule.exe test-network
 ```
 
 ### Ejecutar la batería de pruebas automatizadas

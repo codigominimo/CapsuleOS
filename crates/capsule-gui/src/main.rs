@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M7 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M8 completados)
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
 //! Comandos CLI:
@@ -10,6 +10,7 @@
 //! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de imagen RAW/VHD fixed 512-byte.
 //! - `capsule.exe test-cow`       : Verificación de persistencia Copy-on-Write (overlay) sobre imagen base RAW/VHD.
 //! - `capsule.exe test-platform`  : Verificación de plataforma virtual (PIC 8259, PIT 8254, RTC/CMOS, PCI).
+//! - `capsule.exe test-network`   : Verificación de red en modo usuario (NAT) y virtio-net PCI (M8).
 //! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
@@ -80,7 +81,7 @@ fn print_cli_summary(info: &HostInfo) {
     println!("  WHPX Estado       : {:?}", info.whpx);
     println!("  Detalle           : {}", info.whpx.description());
     println!();
-    println!("Capsule Runtime: OK (VMM, vCPU x86-64, Direct Boot, UART, disco y plataforma M7 listos)");
+    println!("Capsule Runtime: OK (VMM, vCPU x86-64, Direct Boot, UART, disco, plataforma y red M8 listos)");
     println!("==================================================");
 }
 
@@ -534,6 +535,171 @@ fn run_test_cow() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Red en Modo Usuario / virtio-net (M8)");
+    println!("==================================================");
+
+    // 1) NAT: ARP para la puerta de enlace (10.0.2.2)
+    let guest_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    let mut nat = capsule_network::UserModeNat::new(guest_mac);
+    let mut arp_req = vec![0u8; 42];
+    arp_req[0..6].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    arp_req[6..12].copy_from_slice(&guest_mac);
+    arp_req[12..14].copy_from_slice(&0x0806u16.to_be_bytes()); // ARP
+    arp_req[14..16].copy_from_slice(&1u16.to_be_bytes()); // HTYPE Ethernet
+    arp_req[16..18].copy_from_slice(&0x0800u16.to_be_bytes()); // PTYPE IPv4
+    arp_req[18] = 6;
+    arp_req[19] = 4;
+    arp_req[20..22].copy_from_slice(&1u16.to_be_bytes()); // REQUEST
+    arp_req[22..28].copy_from_slice(&guest_mac);
+    arp_req[28..32].copy_from_slice(&[10, 0, 2, 15]); // sender IP
+    arp_req[38..42].copy_from_slice(&[10, 0, 2, 2]); // target IP gateway
+    nat.push_tx_frame(&arp_req)?;
+    let arp_reply = nat
+        .poll_rx_frame()
+        .ok_or("NAT: no se recibió respuesta ARP para gateway")?;
+    assert!(arp_reply.len() >= 42, "NAT: trama ARP de respuesta demasiado corta");
+    assert_eq!(
+        u16::from_be_bytes([arp_reply[12], arp_reply[13]]),
+        0x0806,
+        "NAT: respuesta no es ARP"
+    );
+    assert_eq!(
+        u16::from_be_bytes([arp_reply[20], arp_reply[21]]),
+        2,
+        "NAT: respuesta ARP no es REPLY"
+    );
+    assert_eq!(&arp_reply[28..32], &[10, 0, 2, 2], "NAT: ARP reply SPA incorrecta");
+    println!("  [OK] NAT: respuesta ARP para puerta de enlace");
+
+    // 2) NAT: ICMP echo request al gateway -> echo reply
+    let mut icmp = vec![0u8; 16];
+    icmp[0] = 8; // echo request
+    icmp[1] = 0;
+    let mut sum: u32 = 0;
+    let mut i = 0;
+    while i + 1 < icmp.len() {
+        sum += u16::from_be_bytes([icmp[i], icmp[i + 1]]) as u32;
+        i += 2;
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    let csum = !(sum as u16);
+    icmp[2..4].copy_from_slice(&csum.to_be_bytes());
+    icmp[4..6].copy_from_slice(&0x1234u16.to_be_bytes()); // id
+    icmp[6..8].copy_from_slice(&1u16.to_be_bytes()); // seq
+    let ip_total = 20 + icmp.len();
+    let mut frame = vec![0u8; 14 + ip_total];
+    frame[0..6].copy_from_slice(&[0x52, 0x55, 0x0A, 0x00, 0x02, 0x02]); // dst gateway MAC (any)
+    frame[6..12].copy_from_slice(&guest_mac);
+    frame[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+    let ip = &mut frame[14..];
+    ip[0] = 0x45;
+    ip[2..4].copy_from_slice(&(ip_total as u16).to_be_bytes());
+    ip[8] = 64;
+    ip[9] = 1; // ICMP
+    ip[12..16].copy_from_slice(&[10, 0, 2, 15]);
+    ip[16..20].copy_from_slice(&[10, 0, 2, 2]);
+    let mut ip_sum: u32 = 0;
+    let mut j = 0;
+    while j + 1 < 20 {
+        ip_sum += u16::from_be_bytes([ip[j], ip[j + 1]]) as u32;
+        j += 2;
+    }
+    while (ip_sum >> 16) != 0 {
+        ip_sum = (ip_sum & 0xFFFF) + (ip_sum >> 16);
+    }
+    let ip_csum = !(ip_sum as u16);
+    ip[10..12].copy_from_slice(&ip_csum.to_be_bytes());
+    ip[20..].copy_from_slice(&icmp);
+    nat.push_tx_frame(&frame)?;
+    let echo_reply = nat
+        .poll_rx_frame()
+        .ok_or("NAT: no se recibió ICMP echo reply del gateway")?;
+    assert!(echo_reply.len() >= 14 + 20 + 8, "NAT: trama ICMP de respuesta demasiado corta");
+    assert_eq!(echo_reply[23], 1, "NAT: respuesta IP no es ICMP");
+    assert_eq!(echo_reply[34], 0, "NAT: ICMP reply type incorrecto");
+    println!("  [OK] NAT: ICMP echo reply desde gateway (10.0.2.2)");
+
+    // 3) Integración VM/PCI: virtio-net presente en BDF 00:03.0, IDs y BAR0 I/O con MAC legible
+    let mut vm = VirtualMachine::new(VmConfig {
+        name: "NetworkTestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    })?;
+    // Seleccionar 00:03.0, offset 0x00 (Vendor/Device)
+    // Guest escribe 0x80001800 a 0xCF8 y lee 0xCFC (4 bytes) -> [ebx]
+    let code = [
+        0xBA, 0xF8, 0x0C, 0x00, 0x00, // mov edx, 0x0CF8
+        0xB8, 0x00, 0x18, 0x00, 0x80, // mov eax, 0x80001800
+        0xEF,                         // out dx, eax
+        0xBA, 0xFC, 0x0C, 0x00, 0x00, // mov edx, 0x0CFC
+        0xED,                         // in eax, dx
+        0x89, 0x03,                   // mov [ebx], eax (ebx=0)
+        0xF4,                         // hlt
+    ];
+    vm.load_code(GuestAddress::new(0), &code)?;
+    vm.set_rip(0);
+    let exit = vm.run()?;
+    assert_eq!(exit, VcpuExit::Halt, "VM de red debe terminar con HLT");
+    let mut out = [0u8; 4];
+    vm.memory.read_bytes(GuestAddress::new(0), &mut out)?;
+    let id = u32::from_le_bytes(out);
+    assert_eq!(id & 0xFFFF, 0x1AF4, "virtio-net: Vendor ID PCI incorrecto");
+    assert_eq!((id >> 16) & 0xFFFF, 0x1000, "virtio-net: Device ID PCI incorrecto");
+    println!("  [OK] VM/PCI: virtio-net detectada en 00:03.0 (1AF4:1000)");
+
+    // Habilitar I/O decoding (command bit 0) y leer MAC desde BAR0+0x14 mediante acceso directo al dispositivo PCI
+    // (el puerto BAR puede variar; lo leemos del config space BAR0)
+    let read_cfg = |vm: &mut VirtualMachine, bdf_off: u32| -> u32 {
+        let addr = 0x8000_0000u32 | (0u32 << 16) | (3u32 << 11) | (0u32 << 8) | (bdf_off & 0xFC);
+        for dev in &mut vm.devices {
+            if dev.handles_port(0xCF8) {
+                dev.write_io(0xCF8, addr, 4);
+                return dev.read_io(0xCFC, 4);
+            }
+        }
+        0xFFFF_FFFF
+    };
+    let write_cfg = |vm: &mut VirtualMachine, bdf_off: u32, val: u32| {
+        let addr = 0x8000_0000u32 | (0u32 << 16) | (3u32 << 11) | (0u32 << 8) | (bdf_off & 0xFC);
+        for dev in &mut vm.devices {
+            if dev.handles_port(0xCF8) {
+                dev.write_io(0xCF8, addr, 4);
+                dev.write_io(0xCFC, val, 4);
+                return;
+            }
+        }
+    };
+    let bar0 = read_cfg(&mut vm, 0x10);
+    let bar0_io = (bar0 & 0xFFFC) as u16;
+    assert_ne!(bar0_io, 0, "virtio-net: BAR0 I/O no asignado");
+    // command: IO space enable
+    let cmd = read_cfg(&mut vm, 0x04) & 0xFFFF;
+    write_cfg(&mut vm, 0x04, cmd | 0x0001);
+    // leer 6 bytes de MAC desde config de dispositivo virtio (offset 0x14 en BAR)
+    let mut mac = [0u8; 6];
+    for (i, b) in mac.iter_mut().enumerate() {
+        for dev in &mut vm.devices {
+            if dev.handles_port(bar0_io) {
+                *b = dev.read_io(bar0_io + 0x14 + i as u16, 1) as u8;
+                break;
+            }
+        }
+    }
+    assert_eq!(mac, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56], "virtio-net: MAC inesperada en config BAR");
+    println!("  [OK] virtio-net: BAR0 I/O habilitado y MAC legible ({:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X})",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    println!("--------------------------------------------------");
+    println!("  Red M8 (NAT modo usuario + virtio-net PCI): ÉXITO");
+    println!("  Nota: sin MMIO/inyección de IRQ en CPU; virtio-net operada por sondeo (polling) y BAR I/O.");
+    println!("==================================================");
+    Ok(())
+}
+
 fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("   Prueba de Plataforma Virtual (Hito M7)       ");
@@ -970,7 +1136,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(74, 222, 128));
             draw_text_line(
                 hdc,
-                "OK - UART, boot Linux, ATA/IDE, COW y plataforma PIC/PIT/RTC/PCI (Hitos M0-M7 completados)",
+                "OK - UART, boot Linux, ATA/IDE, COW, plataforma y red NAT/virtio-net (Hitos M0-M8 completados)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -982,7 +1148,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(220, 225, 235));
             draw_text_line(
                 hdc,
-                "M5-M7: RAW/VHD+COW, boot LBA0->0x7C00, PIC 8259, PIT 8254, RTC/CMOS, PCI y test-platform",
+                "M5-M8: RAW/VHD+COW, boot LBA0->0x7C00, PIC/PIT/RTC/PCI, virtio-net/NAT y test-platform/test-network",
                 48,
                 current_y,
                 rect.right - 48,
@@ -995,7 +1161,7 @@ unsafe extern "system" fn window_proc(
             SelectObject(hdc, code_font);
             draw_text_line(
                 hdc,
-                "Siguiente paso: inyección de IRQ en CPU (IDT/CLI/STI/IRET), M8 (red) y M12 (firmware/boot real)",
+                "Siguiente paso: inyección de IRQ en CPU (IDT/CLI/STI/IRET), M9 (framebuffer) y M12 (firmware/boot real)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -1176,6 +1342,14 @@ fn main() {
     if args.iter().any(|arg| arg == "test-platform" || arg == "--test-platform") {
         if let Err(e) = run_test_platform() {
             eprintln!("Error en test-platform: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-network" || arg == "--test-network") {
+        if let Err(e) = run_test_network() {
+            eprintln!("Error en test-network: {}", e);
             std::process::exit(1);
         }
         return;

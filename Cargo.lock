@@ -31,6 +31,8 @@ name = "capsule-devices"
 version = "0.1.0"
 dependencies = [
  "capsule-core",
+ "capsule-memory",
+ "capsule-network",
  "capsule-storage",
 ]
 
@@ -43,6 +45,7 @@ dependencies = [
  "capsule-cpu",
  "capsule-devices",
  "capsule-memory",
+ "capsule-network",
  "capsule-storage",
  "capsule-vmm",
  "windows-sys",
@@ -54,6 +57,13 @@ version = "0.1.0"
 dependencies = [
  "capsule-core",
  "windows-sys",
+]
+
+[[package]]
+name = "capsule-network"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
 ]
 
 [[package]]
@@ -72,6 +82,7 @@ dependencies = [
  "capsule-cpu",
  "capsule-devices",
  "capsule-memory",
+ "capsule-network",
  "capsule-storage",
 ]
 

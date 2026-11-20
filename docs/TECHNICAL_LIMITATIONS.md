@@ -37,13 +37,18 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Limitación**: Un intérprete de instrucciones x86_64 en modo software es órdenes de magnitud más lento que la virtualización por hardware nativa.
 * **Objetivo de uso**: La emulación por software está destinada a sistemas minimalistas (kernels embebidos, pruebas, NanoOS o Linux mínimo de recuperación) y no para sistemas de escritorio pesados con entornos gráficos complejos hasta no disponer de un motor de traducción binaria dinámica (JIT).
 
+### 2.3. Plataforma/IRQ en la CPU software (estado M7-M8)
+* **Limitación**: El backend de CPU software actual no implementa entrega de interrupciones arquitecturales (IDT/CLI/STI/IRET/APIC). Aunque el PIC/PIT/RTC/PCI/IDE reflejan IRQs y condiciones pendientes (p. ej. PIT IRQ0, IDE IRQ14, INTx PCI/IRQ11), la VM procesa dispositivos por sondeo (polling) en cada tick/iteración.
+* **Impacto**: Guests que dependan estrictamente de interrupciones temporizadas o de notificación asíncrona por IRQ pueden no funcionar correctamente hasta que se implemente inyección/entrega de interrupciones en la vCPU.
+
 ---
 
 ## 3. Dispositivos y Controladores
 
-### 3.1. Red sin Privilegios Administrativos
-* **Problema**: La creación de interfaces de red virtuales en Windows (como adaptadores TAP o controladores Wintun) suele requerir privilegios de Administrador para su instalación en el sistema.
-* **Solución**: Implementar una pila de red en modo usuario (User-mode TCP/IP stack) que traduzca el tráfico de paquetes Ethernet del dispositivo `virtio-net` guest a sockets estándar Win32 (`WSASocket`) en el host, permitiendo navegación Web (`curl`, `apt`, `http/https`) sin elevación UAC.
+### 3.1. Red sin Privilegios Administrativos (M8: implementación inicial)
+* **Problema**: La creación de interfaces de red virtuales en Windows (TAP/Wintun) suele requerir privilegios de Administrador.
+* **Estado M8**: `capsule-network::UserModeNat` implementa una pila/NAT en modo usuario básica (ARP, DHCP básico, ICMP echo a IPs virtuales, reenvío UDP saliente mediante sockets del host con un flujo pendiente) expuesta al guest por `VirtioNetPci` (PCI legacy I/O BAR0, virtqueues RX/TX en memoria guest) operada por sondeo desde la VM.
+* **Limitaciones actuales**: sin TCP y sin múltiples flujos/conexiones concurrentes completas; DNS no es resolución real completa (uso de IPs virtuales/reenvío limitado); sin MMIO/transporte moderno y sin inyección de IRQ en CPU (IDT/CLI/STI/IRET), por lo que el dispositivo depende de polling; INTx PCI se agrega como IRQ11 en PIC a nivel de plataforma.
 
 ### 3.2. Aceleración Gráfica
 * **Limitación**: El acceso directo a GPU (GPU Passthrough) no está disponible en hipervisores de tipo 2 de nivel de usuario en Windows.

@@ -22,8 +22,8 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 
 | Sistema Operativo | Arquitectura | Modo Arranque | Backend Emulador | Backend WHPX | Consola (TTY) | Gráficos (GUI) | Persistencia | Estado |
 |---|---|---|---|---|---|---|---|---|
-| **Minimal Test Guest** | x86-64 | Direct (M1) | Planeado | Planeado | Planeado | N/A | N/A | En desarrollo |
-| **Linux Minimal (BusyBox)** | x86-64 | Direct Boot | Planeado | Planeado | Planeado | N/A | Planeado | Planeado |
+| **Minimal Test Guest (synthetic)** | x86-64 | Direct (M1) | Planeado | Planeado | Verificado (UART 16550/COM1 por sondeo) | N/A | N/A | En desarrollo (tests internos) |
+| **Linux Minimal (BusyBox / initramfs)** | x86-64 | Direct Boot (bzImage) | Planeado | Planeado | Planeado (base UART/earlyprintk) | N/A | Planeado | Planeado |
 | **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado |
 | **Ubuntu Desktop** | x86-64 | UEFI | No (lento) | Planeado | Planeado | Planeado | Planeado | Planeado |
@@ -39,8 +39,20 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 
 | Formato | Lectura | Escritura Directa | Capa Copy-on-Write (Overlay) | Estado |
 |---|---|---|---|---|
-| **Raw Sector Image (.img, .raw)** | Planeado | Planeado | Planeado | Planeado |
+| **Raw Sector Image (.img, .raw)** | Verificado (tests M5) | Verificado (tests M5) | Verificado (overlay COW, M6) | Soportado (RAW sector 512, scope actual) |
+| **VHD Fixed (512-byte)** | Verificado (tests M5) | Verificado (tests M5) | Verificado (overlay COW, M6) | Soportado (fixed, sector 512) |
 | **ISO 9660 (.iso)** | Planeado | No (Solo lectura) | Planeado (Overlay COW) | Planeado |
-| **VHD (Fixed / Dynamic)** | Planeado | Planeado | Planeado | Planeado |
+| **VHD Dynamic** | Planeado | Planeado | Planeado | Planeado |
 | **VHDX** | Planeado | Planeado | Planeado | Planeado |
 | **QCOW2** | Planeado | Planeado | Planeado | Planeado |
+
+---
+
+## 4. Plataforma Virtual y Red (M7-M8)
+
+| Componente | Capacidad verificada (tests CLI/unitarios, backend software) | Limitaciones actuales |
+|---|---|---|
+| **PIC 8259 / PIT 8254 / RTC-CMOS** | Inicialización, IMR/IRQ0 PIT, hora/fecha básica y tick simplificado (`test-platform`) | Sin inyección de IRQ en CPU (IDT/CLI/STI/IRET); modelo temporal simplificado |
+| **PCI (mecanismo #1)** | Enumeración/config I/O `0xCF8/0xCFC`, BAR I/O y dispositivo virtio-net en `00:03.0` | Sin MMIO; INTx agregada cableada a IRQ11 por sondeo |
+| **Virtio-net transitional (legacy I/O)** | Virtqueues RX/TX en memoria guest y procesamiento por polling desde la VM (`test-network`) | Sin MMIO/transporte moderno, sin features/offloads avanzados |
+| **User-mode NAT** | ARP, DHCP básico, ICMP echo (gateway/DNS virtual), UDP saliente con respuesta (flujo limitado) (`test-network`) | Sin TCP, sin multi-flow/conexiones concurrentes completas, sin DNS real completo, sin drivers host |

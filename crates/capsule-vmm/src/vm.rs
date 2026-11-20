@@ -7,7 +7,9 @@ use crate::traits::VmmError;
 use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
-use capsule_devices::{IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550, COM1_BASE};
+use capsule_devices::{
+    IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550, VirtioNetPci, COM1_BASE,
+};
 use capsule_memory::GuestMemory;
 use capsule_storage::BlockDevice;
 
@@ -22,7 +24,8 @@ pub struct VirtualMachine {
 impl VirtualMachine {
     /// Inicializa una nueva máquina virtual con la configuración dada.
     /// Registra dispositivos de plataforma básicos: COM1 (UART 16550), PIC 8259, PIT 8254,
-    /// RTC/CMOS y un bus PCI simplificado (config mechanism #1).
+    /// RTC/CMOS, un bus PCI (config mechanism #1) y una NIC virtio-net transitional
+    /// con backend NAT en modo usuario (M8).
     pub fn new(config: VmConfig) -> Result<Self, VmmError> {
         let mem_size = config.memory_size.as_bytes() as usize;
         let memory = GuestMemory::new(mem_size).map_err(|e| {
@@ -39,12 +42,14 @@ impl VirtualMachine {
             status: VmStatus::Created,
         };
 
-        // Dispositivos estándar de plataforma (M7)
         vm.add_device(Box::new(Uart16550::new(COM1_BASE)));
         vm.add_device(Box::new(Pic8259::new()));
         vm.add_device(Box::new(Pit8254::new()));
         vm.add_device(Box::new(RtcCmos::new()));
-        vm.add_device(Box::new(PciBus::new()));
+
+        let mut pci = PciBus::new();
+        pci.attach_device(Box::new(VirtioNetPci::new_default()));
+        vm.add_device(Box::new(pci));
 
         Ok(vm)
     }
@@ -128,7 +133,6 @@ impl VirtualMachine {
         )
         .map_err(|e| VmmError::InitializationFailed(e))?;
 
-        // Configuración de registros para Linux Boot Protocol:
         self.vcpu.regs.rip = boot_info.entry_rip;
         self.vcpu.regs.rsi = boot_info.boot_params_addr.raw();
         self.vcpu.regs.rax = 0;
@@ -169,14 +173,29 @@ impl VirtualMachine {
             }
         }
 
+        // Sondeo de dispositivos PCI con acceso a memoria guest (p.ej. virtio-net virtqueues + NAT).
+        {
+            let memory = &mut self.memory;
+            for dev in &mut self.devices {
+                if let Some(pci) = dev.as_any_mut().downcast_mut::<PciBus>() {
+                    pci.poll_devices(memory);
+                    break;
+                }
+            }
+        }
+
         // Cableado de IRQs de plataforma hacia PIC 8259.
-        // - IRQ0: PIT (pulso en flanco aproximado por tick)
+        // - IRQ0 : PIT (pulso en flanco aproximado por tick)
+        // - IRQ11: PCI INTx agregada (virtio-net, nivel mientras ISR pendiente)
         // - IRQ14: IDE primario (nivel mientras irq_pending && !nIEN)
         let mut ide_irq14 = false;
+        let mut pci_irq11 = false;
         for dev in &mut self.devices {
             if let Some(ide) = dev.as_any_mut().downcast_mut::<IdeController>() {
                 ide_irq14 = ide.irq_pending();
-                break;
+            }
+            if let Some(pci) = dev.as_any_mut().downcast_mut::<PciBus>() {
+                pci_irq11 = pci.any_irq_level();
             }
         }
 
@@ -185,6 +204,7 @@ impl VirtualMachine {
                 if pit_irq0 {
                     pic.raise_irq(0);
                 }
+                pic.set_irq_level(11, pci_irq11);
                 pic.set_irq_level(14, ide_irq14);
                 break;
             }
@@ -192,9 +212,10 @@ impl VirtualMachine {
     }
 
     /// Ejecuta el bucle principal de la vCPU hasta alcanzar una condición de salida (HALT, Error, etc.).
-    /// El bucle avanza dispositivos de plataforma (PIT/RTC) y actualiza líneas IRQ básicas (PIC, IDE IRQ14)
-    /// en cada paso. La inyección de interrupciones en la CPU software no está implementada aún; los
-    /// guests deben usar sondeo (polling) o esperar soporte futuro de interrupciones/IDT.
+    /// El bucle avanza dispositivos de plataforma (PIT/RTC), sondea dispositivos PCI (virtqueues/NAT)
+    /// con acceso a memoria guest y actualiza líneas IRQ básicas (PIC, IDE IRQ14, PCI INTx/IRQ11).
+    /// La inyección de interrupciones en la CPU software no está implementada aún; los guests deben
+    /// usar sondeo (polling) o esperar soporte futuro de interrupciones/IDT.
     pub fn run(&mut self) -> Result<VcpuExit, VmmError> {
         self.status = VmStatus::Running;
 
@@ -218,7 +239,7 @@ impl VirtualMachine {
                         }
                     }
 
-                    // La E/S puede cambiar estado de dispositivos (p.ej. PIC/IDE); refrescar IRQs.
+                    // La E/S puede cambiar estado de dispositivos (p.ej. PIC/IDE/PCI); refrescar.
                     self.tick_platform();
 
                     if !handled {
@@ -247,7 +268,7 @@ impl VirtualMachine {
                         }
                     }
 
-                    // Lecturas de estado (IDE/PIC/RTC) pueden reconocer/limpiar condiciones.
+                    // Lecturas de estado (IDE/PIC/RTC/PCI) pueden reconocer/limpiar condiciones.
                     self.tick_platform();
 
                     if !handled {

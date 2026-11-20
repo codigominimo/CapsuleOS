@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 resolver = "2"
 members = [
     "crates/capsule-core",
@@ -7,6 +7,7 @@ members = [
     "crates/capsule-boot",
     "crates/capsule-devices",
     "crates/capsule-storage",
+    "crates/capsule-network",
     "crates/capsule-vmm",
     "crates/capsule-gui",
 ]
@@ -21,3 +22,4 @@ repository = "https://github.com/codigominimo/CapsuleOS"
 
 [workspace.dependencies]
 windows-sys = { version = "0.61.2" }
+

@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "capsule-vmm"
 version.workspace = true
 edition.workspace = true
@@ -12,3 +12,5 @@ capsule-cpu = { path = "../capsule-cpu" }
 capsule-boot = { path = "../capsule-boot" }
 capsule-devices = { path = "../capsule-devices" }
 capsule-storage = { path = "../capsule-storage" }
+capsule-network = { path = "../capsule-network" }
+
