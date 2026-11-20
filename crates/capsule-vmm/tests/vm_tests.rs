@@ -346,3 +346,80 @@ fn test_vm_ide_pio_write_flush_persistence() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn test_vm_boot_from_disk_sector_reads_next_sector_via_ide() {
+    use capsule_storage::{BlockDevice, RawDiskImage, DEFAULT_SECTOR_SIZE};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("capsuleos_vm_bootdisk_{nanos}.img"));
+
+    let mut disk = RawDiskImage::create(&path, 16, DEFAULT_SECTOR_SIZE).expect("create raw disk");
+    let mut sector1 = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+    for i in 0..sector1.len() {
+        sector1[i] = 0x5Au8 ^ (i as u8);
+    }
+    disk.write_sectors(1, 1, &sector1).expect("write lba1");
+    disk.flush().expect("flush");
+
+    // Boot sector (LBA0): leer LBA1 por ATA PIO a 0x1000 y detenerse
+    let mut boot_sector = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+    let mut code: Vec<u8> = Vec::new();
+    // Select master, LBA
+    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+    // READ SECTORS: count=1, lba=1, cmd=0x20
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
+    // Read loop: 128 dwords 0x1F0 -> 0x1000
+    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
+    code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=dst
+    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
+    let read_loop = code.len();
+    code.extend_from_slice(&[0xED, 0x89, 0x03, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
+    let rel = (read_loop as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rel as i8 as u8]);
+    code.push(0xF4); // hlt
+    assert!(code.len() <= 510, "El boot sector de prueba excede 510 bytes");
+    boot_sector[..code.len()].copy_from_slice(&code);
+    boot_sector[510] = 0x55;
+    boot_sector[511] = 0xAA;
+
+    disk.write_sectors(0, 1, &boot_sector).expect("write boot sector");
+    disk.flush().expect("flush boot sector");
+    drop(disk);
+
+    let config = VmConfig {
+        name: "BootFromDiskVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    };
+    let mut vm = VirtualMachine::new(config).expect("create vm");
+    let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw disk");
+    vm.boot_from_primary_master_disk(Box::new(disk))
+        .expect("boot from disk");
+
+    assert_eq!(vm.rip(), 0x7C00, "RIP debe iniciar en el sector de arranque");
+    let mut loaded_boot = vec![0u8; 512];
+    vm.memory
+        .read_bytes(GuestAddress::new(0x7C00), &mut loaded_boot)
+        .expect("read boot sector in guest memory");
+    assert_eq!(&loaded_boot[510..512], &[0x55, 0xAA], "Firma de boot sector debe estar cargada");
+
+    let exit = vm.run().expect("run boot sector");
+    assert_eq!(exit, VcpuExit::Halt, "El boot sector debe finalizar con HLT");
+
+    let mut out = vec![0u8; 512];
+    vm.memory
+        .read_bytes(GuestAddress::new(0x1000), &mut out)
+        .expect("read sector loaded by boot code");
+    assert_eq!(out, sector1, "El boot sector debe leer LBA1 desde el disco adjunto via IDE PIO");
+
+    let _ = std::fs::remove_file(&path);
+}

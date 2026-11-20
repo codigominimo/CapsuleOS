@@ -67,6 +67,37 @@ impl VirtualMachine {
         Ok(())
     }
 
+    /// Carga el sector de arranque (LBA 0, 512 bytes) desde un disco en 0x7C00,
+    /// configura RIP=0x7C00 y adjunta el disco al IDE primario maestro.
+    /// Permite un flujo mínimo de "boot desde disco" usando un stub de arranque plano.
+    pub fn boot_from_primary_master_disk(
+        &mut self,
+        mut disk: Box<dyn BlockDevice>,
+    ) -> Result<(), VmmError> {
+        if disk.sector_size() != 512 {
+            return Err(VmmError::InitializationFailed(format!(
+                "Solo se soporta boot desde disco con sectores de 512 bytes (recibido: {})",
+                disk.sector_size()
+            )));
+        }
+        let mut boot_sector = vec![0u8; 512];
+        disk.read_sectors(0, 1, &mut boot_sector).map_err(|e| {
+            VmmError::MemoryMappingFailed(format!("Error leyendo sector de arranque LBA 0: {}", e))
+        })?;
+        self.memory
+            .write_bytes(GuestAddress::new(0x7C00), &boot_sector)
+            .map_err(|e| {
+                VmmError::MemoryMappingFailed(format!(
+                    "Error cargando sector de arranque en 0x7C00: {}",
+                    e
+                ))
+            })?;
+        self.vcpu.regs.rip = 0x7C00;
+        self.vcpu.regs.rdx = 0x0080; // convención: DL=0x80 (primer disco)
+        self.attach_primary_master_disk(disk)?;
+        Ok(())
+    }
+
     /// Carga un bloque de código máquina ejecutable en la memoria física del guest.
     pub fn load_code(&mut self, gpa: GuestAddress, code: &[u8]) -> Result<(), VmmError> {
         self.memory.write_bytes(gpa, code).map_err(|e| {

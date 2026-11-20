@@ -1,12 +1,15 @@
 //! Abstracción de dispositivos virtuales (I/O ports y MMIO).
 
 use capsule_devices::{IdeController, Uart16550};
+use std::any::Any;
 
-pub trait VirtualDevice: Send {
+pub trait VirtualDevice: Send + Any {
     fn name(&self) -> &str;
     fn handles_port(&self, port: u16) -> bool;
     fn read_io(&mut self, port: u16, size: u8) -> u32;
     fn write_io(&mut self, port: u16, data: u32, size: u8);
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Implementación del trait VirtualDevice para el controlador serie UART 16550 estándar.
@@ -26,6 +29,14 @@ impl VirtualDevice for Uart16550 {
     fn write_io(&mut self, port: u16, data: u32, _size: u8) {
         self.write_io(port, (data & 0xFF) as u8);
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// Implementación del trait VirtualDevice para el controlador ATA/IDE PIO primario.
@@ -44,6 +55,14 @@ impl VirtualDevice for IdeController {
 
     fn write_io(&mut self, port: u16, data: u32, size: u8) {
         IdeController::write_io(self, port, data, size);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 
@@ -80,5 +99,13 @@ impl VirtualDevice for DebugConsoleDevice {
     fn write_io(&mut self, _port: u16, data: u32, _size: u8) {
         let byte = (data & 0xFF) as u8;
         self.output_buffer.push(byte);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
