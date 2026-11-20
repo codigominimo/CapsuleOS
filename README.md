@@ -106,9 +106,9 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Controlador ATA/IDE PIO primario (canal maestro, LBA28): `IDENTIFY`, `READ/WRITE SECTORS`, `FLUSH CACHE`.
   - Modelo de IRQ simplificado (condición pendiente, `nIEN`) y software reset (`SRST`) en el controlador.
   - Integración VM: `attach_primary_master_disk`, E/S PIO 8/16/32-bit, y flujo mínimo de arranque desde disco (`boot_from_primary_master_disk`: carga LBA0 en `0x7C00`, `RIP=0x7C00`).
-  - Validación: transferencias PIO (incl. multi-sector), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, y boot sector que lee sectores vía IDE.
-  - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk`.
-  - Pendiente: robustecer ATA (cableado de INTRQ real a PIC/APIC, semántica de errores/registros más completa), arranque de cargas más realistas desde disco/firmware, y evolución a `virtio-blk` / formatos dinámicos o COW (M6).
+  - Validación: transferencias PIO (incl. multi-sector y `sector_count=0` => 256 sectores), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, errores ATA básicos (`IDNF`/`ABRT`, unidad ausente/IDENTIFY slave), y boot sector con carga multi-sector vía IDE.
+  - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk [path]` (self-test o arranque experimental de imagen RAW 512-byte).
+  - Pendiente: robustecer ATA (cableado de INTRQ real a PIC/APIC, semántica de errores/registros más completa, mayor compatibilidad), arranque de cargas reales desde disco/firmware (solape M12), selección/configuración de disco por CLI/config, y evolución a `virtio-blk` / formatos dinámicos o COW (M6).
 
 ---
 
@@ -163,7 +163,11 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 
 ### Verificar arranque desde disco (sector de arranque + IDE PIO, Hito M5)
 ```powershell
+# Self-test sintético (LBA0 -> 0x7C00, carga multi-sector LBA1-2 via ATA PIO)
 .\target\release\capsule.exe test-boot-disk
+
+# Arranque experimental de una imagen RAW externa (sector 512 bytes)
+.\target\release\capsule.exe test-boot-disk .\ruta\disco.img
 ```
 
 ### Ejecutar la batería de pruebas automatizadas

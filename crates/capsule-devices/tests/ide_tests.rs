@@ -362,3 +362,112 @@ fn ide_new_command_while_drq_active_replaces_pending_transfer() {
     let st = ide.read_io(0x1F7, 1);
     assert_eq!(st & 0x08, 0x08, "Tras cancelar DRQ, el controlador debe aceptar nuevos comandos");
 }
+
+#[test]
+fn ide_identify_absent_slave_sets_error() {
+    let disk = MemoryDisk::new(16, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // Seleccionar slave ausente (DEV=1, LBA=1)
+    ide.write_io(0x1F6, 0xF0, 1);
+    ide.write_io(0x1F7, 0xEC, 1); // IDENTIFY
+    let st = ide.read_io(0x1F7, 1);
+    assert_ne!(st & 0x01, 0, "IDENTIFY en unidad ausente debe señalizar ERR");
+    assert_eq!(st & 0x08, 0, "IDENTIFY fallido no debe activar DRQ");
+    assert_eq!(ide.read_io(0x1F1, 1) & 0x04, 0x04, "IDENTIFY en unidad ausente debe reportar ABRT");
+}
+
+#[test]
+fn ide_sector_count_zero_means_256_sectors_pio() {
+    let mut disk = MemoryDisk::new(300, DEFAULT_SECTOR_SIZE).expect("disk");
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+
+    // Sembrar patrones en el primer y último sector del rango de 256 sectores desde LBA 0
+    let mut s0 = vec![0u8; sector_size];
+    let mut s255 = vec![0u8; sector_size];
+    for i in 0..sector_size {
+        s0[i] = (i as u8).wrapping_mul(13).wrapping_add(0x11);
+        s255[i] = (i as u8).wrapping_mul(17).wrapping_add(0x22);
+    }
+    disk.write_sectors(0, 1, &s0).unwrap();
+    disk.write_sectors(255, 1, &s255).unwrap();
+
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // READ 256 sectores (sector_count=0) desde LBA 0
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 0, 1); // count=0 => 256
+    ide.write_io(0x1F3, 0, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1);
+    let st = ide.read_io(0x1F7, 1);
+    assert_eq!(st & 0x01, 0, "READ count=0 (256) no debe fallar");
+    assert_eq!(st & 0x08, 0x08, "READ count=0 (256) debe activar DRQ");
+
+    let mut read_back = vec![0u8; sector_size * 256];
+    for i in (0..read_back.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        read_back[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(&read_back[..sector_size], &s0[..], "Primer sector (LBA0) incorrecto");
+    assert_eq!(
+        &read_back[255 * sector_size..256 * sector_size],
+        &s255[..],
+        "Sector 255 (último del bloque de 256) incorrecto"
+    );
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x08, 0, "DRQ debe limpiarse tras leer 256 sectores");
+
+    // WRITE 256 sectores a partir de LBA 10 con un patrón verificable (inicio/fin)
+    let mut payload = vec![0u8; sector_size * 256];
+    for (i, b) in payload.iter_mut().enumerate() {
+        // Patrón simple pero único por byte (no necesario que sea complejo)
+        *b = (i as u8).wrapping_mul(3) ^ 0x5A;
+    }
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 0, 1); // 256 sectores
+    ide.write_io(0x1F3, 10, 1); // LBA 10
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x30, 1); // WRITE
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x08, 0x08, "WRITE count=0 (256) debe activar DRQ");
+    for i in (0..payload.len()).step_by(4) {
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&payload[i..i + 4]);
+        ide.write_io(0x1F0, u32::from_le_bytes(bytes), 4);
+    }
+    assert_eq!(ide.read_io(0x1F7, 1) & 0x01, 0, "WRITE count=0 (256) no debe reportar error");
+
+    // Verificar releyendo el primer y último sector escritos
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 10, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1);
+    let mut first = vec![0u8; sector_size];
+    for i in (0..first.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        first[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(first, &payload[..sector_size], "Primer sector escrito (LBA10) incorrecto");
+
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 0x09, 1); // LBA 265 (0x0109) low
+    ide.write_io(0x1F4, 0x01, 1); // LBA mid
+    ide.write_io(0x1F5, 0x00, 1); // LBA high
+    ide.write_io(0x1F7, 0x20, 1);
+    let mut last = vec![0u8; sector_size];
+    for i in (0..last.len()).step_by(4) {
+        let v = ide.read_io(0x1F0, 4);
+        last[i..i + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(
+        last,
+        &payload[255 * sector_size..256 * sector_size],
+        "Último sector escrito (LBA265) incorrecto"
+    );
+}

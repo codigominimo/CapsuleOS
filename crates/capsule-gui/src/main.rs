@@ -7,7 +7,7 @@
 //! - `capsule.exe test-serial`    : Verificación del puerto serie UART 16550 (COM1 / earlyprintk).
 //! - `capsule.exe test-storage`   : Verificación de almacenamiento de bloques (RAW y VHD fixed).
 //! - `capsule.exe test-disk`      : Verificación de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
-//! - `capsule.exe test-boot-disk` : Verificación de arranque desde disco (sector de arranque + IDE PIO).
+//! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de una imagen RAW 512-byte.
 //! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
@@ -443,7 +443,50 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_test_boot_disk() -> Result<(), Box<dyn std::error::Error>> {
+fn boot_raw_disk_image(path: &str, vm_name: &str) -> Result<VcpuExit, Box<dyn std::error::Error>> {
+    let config = VmConfig {
+        name: vm_name.to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    };
+    let mut vm = VirtualMachine::new(config)?;
+    let disk = RawDiskImage::open(path, DEFAULT_SECTOR_SIZE)?;
+    vm.boot_from_primary_master_disk(Box::new(disk))?;
+    println!("  [OK] LBA0 cargado en 0x7C00, RIP=0x7C00 (imagen: {path})");
+    let exit = vm.run()?;
+    Ok(exit)
+}
+
+fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = image_path {
+        println!("==================================================");
+        println!("   Arranque desde Disco (imagen externa, M5)     ");
+        println!("==================================================");
+        let exit = boot_raw_disk_image(path, "BootFromDiskImage")?;
+        println!("  Resultado de ejecucion: {:?}", exit);
+        match exit {
+            VcpuExit::Halt => {
+                println!("  [OK] El guest finalizo con HLT");
+            }
+            VcpuExit::IoIn { port, size } => {
+                println!("  [INFO] Salida VM por IO IN no manejado: puerto 0x{port:04X}, tam={size}");
+            }
+            VcpuExit::IoOut { port, data, size } => {
+                println!(
+                    "  [INFO] Salida VM por IO OUT no manejado: puerto 0x{port:04X}, dato 0x{data:X}, tam={size}"
+                );
+            }
+            other => {
+                println!("  [INFO] Salida VM: {:?}", other);
+            }
+        }
+        println!("--------------------------------------------------");
+        println!("  Arranque desde disco (imagen): completado");
+        println!("  Nota: CPU emulada limitada; bootloaders reales pueden requerir mas ISA/dispositivos.");
+        println!("==================================================");
+        return Ok(());
+    }
+
     println!("==================================================");
     println!("   Prueba de Arranque desde Disco (Hito M5)     ");
     println!("==================================================");
@@ -711,7 +754,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(251, 191, 36));
             draw_text_line(
                 hdc,
-                "En progreso - M5: ATA/IDE PIO (IRQ/nIEN/SRST), RAW/VHD, boot sector (test-disk/test-boot-disk)",
+                "En progreso - M5: ATA/IDE PIO (IRQ/nIEN/SRST), RAW/VHD, boot sector multi-sector (test-disk/test-boot-disk [img])",
                 48,
                 current_y,
                 rect.right - 48,
@@ -879,8 +922,15 @@ fn main() {
         return;
     }
 
-    if args.iter().any(|arg| arg == "test-boot-disk" || arg == "--test-boot-disk") {
-        if let Err(e) = run_test_boot_disk() {
+    if let Some(pos) = args
+        .iter()
+        .position(|arg| arg == "test-boot-disk" || arg == "--test-boot-disk")
+    {
+        let path = args
+            .get(pos + 1)
+            .filter(|a| !a.starts_with('-'))
+            .map(|s| s.as_str());
+        if let Err(e) = run_test_boot_disk(path) {
             eprintln!("Error en test-boot-disk: {}", e);
             std::process::exit(1);
         }
