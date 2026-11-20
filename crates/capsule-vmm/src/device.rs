@@ -1,6 +1,6 @@
 //! Abstracción de dispositivos virtuales (I/O ports y MMIO).
 
-use capsule_devices::{IdeController, Uart16550};
+use capsule_devices::{IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
 use std::any::Any;
 
 pub trait VirtualDevice: Send + Any {
@@ -10,6 +10,9 @@ pub trait VirtualDevice: Send + Any {
     fn write_io(&mut self, port: u16, data: u32, size: u8);
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Avanza el estado interno del dispositivo (timers, contadores, etc.).
+    /// `cycles` representa pasos/ciclos aproximados de la vCPU desde el último tick.
+    fn tick(&mut self, _cycles: u64) {}
 }
 
 /// Implementación del trait VirtualDevice para el controlador serie UART 16550 estándar.
@@ -55,6 +58,122 @@ impl VirtualDevice for IdeController {
 
     fn write_io(&mut self, port: u16, data: u32, size: u8) {
         IdeController::write_io(self, port, data, size);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Implementación del trait VirtualDevice para el PIC 8259 dual (maestro/esclavo).
+impl VirtualDevice for Pic8259 {
+    fn name(&self) -> &str {
+        "PIC8259"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        Pic8259::handles_port(self, port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        Pic8259::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        Pic8259::write_io(self, port, data, size);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Implementación del trait VirtualDevice para el PIT 8254.
+impl VirtualDevice for Pit8254 {
+    fn name(&self) -> &str {
+        "PIT8254"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        Pit8254::handles_port(self, port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        Pit8254::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        Pit8254::write_io(self, port, data, size);
+    }
+
+    fn tick(&mut self, cycles: u64) {
+        let _ = Pit8254::tick(self, cycles);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Implementación del trait VirtualDevice para el RTC/CMOS MC146818.
+impl VirtualDevice for RtcCmos {
+    fn name(&self) -> &str {
+        "RTC_CMOS"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        RtcCmos::handles_port(self, port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        RtcCmos::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        RtcCmos::write_io(self, port, data, size);
+    }
+
+    fn tick(&mut self, _cycles: u64) {
+        RtcCmos::tick(self);
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Implementación del trait VirtualDevice para el bus PCI (configuración mechanism #1).
+impl VirtualDevice for PciBus {
+    fn name(&self) -> &str {
+        "PCI_BUS"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        PciBus::handles_port(self, port)
+    }
+
+    fn read_io(&mut self, port: u16, size: u8) -> u32 {
+        PciBus::read_io(self, port, size)
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, size: u8) {
+        PciBus::write_io(self, port, data, size);
     }
 
     fn as_any(&self) -> &dyn Any {

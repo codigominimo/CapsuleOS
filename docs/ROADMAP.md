@@ -1,4 +1,4 @@
-# Hoja de Ruta (Roadmap) de CapsuleOS
+﻿# Hoja de Ruta (Roadmap) de CapsuleOS
 
 Este documento detalla el plan de desarrollo paso a paso para el proyecto CapsuleOS. El desarrollo se realiza de forma estrictamente incremental (hito a hito), donde cada hito debe ser validado y probado antes de avanzar al siguiente.
 
@@ -15,7 +15,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M4** | **Linux Console & Shell** | Arranque de Linux con initramfs BusyBox y consola interactiva COM1/UART | **Completado** |
 | **M5** | **Virtual Disk (RAW/VHD)** | Controlador ATA/IDE PIO, imágenes RAW/VHD fixed y arranque mínimo desde disco (LBA0) | **Completado** |
 | **M6** | **Copy-on-Write Persistence** | Overlay COW (bitmap por sector) sobre imágenes base RAW/VHD sin modificarlas, con persistencia | **Completado** |
-| **M7** | **Virtual Platform Devices** | PIT, PIC/APIC, RTC y bus PCI simplificado para soporte de SO completos | Pendiente |
+| **M7** | **Virtual Platform Devices** | PIC 8259 (dual, maestro/esclavo), PIT 8254, RTC/CMOS MC146818 y bus PCI simplificado (config 0xCF8/0xCFC, bus vacío) integrados en la VM; IRQ0 (PIT) e IRQ14 (IDE primario, nivel) cableadas al PIC; validación con `test-platform` y pruebas unitarias | **Completado** |
 | **M8** | **Networking (User-mode NAT)**| Dispositivo virtio-net con pila SLIRP en modo usuario (acceso a internet sin drivers host) | Pendiente |
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE y renderizado en tiempo real en la ventana Win32 | Pendiente |
 | **M10**| **GUI Input & PS/2** | Integración de ratón y teclado desde eventos de ventana hacia controlador PS/2 guest | Pendiente |

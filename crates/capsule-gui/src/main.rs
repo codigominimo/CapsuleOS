@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M6 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M7 completados)
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
 //! Comandos CLI:
@@ -9,6 +9,7 @@
 //! - `capsule.exe test-disk`      : Verificación de disco adjunto a la VM (ATA/IDE PIO + RAW/VHD).
 //! - `capsule.exe test-boot-disk [path]` : Verificación de arranque desde disco (self-test) o arranque de imagen RAW/VHD fixed 512-byte.
 //! - `capsule.exe test-cow`       : Verificación de persistencia Copy-on-Write (overlay) sobre imagen base RAW/VHD.
+//! - `capsule.exe test-platform`  : Verificación de plataforma virtual (PIC 8259, PIT 8254, RTC/CMOS, PCI).
 //! - (Sin argumentos)            : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
@@ -79,7 +80,7 @@ fn print_cli_summary(info: &HostInfo) {
     println!("  WHPX Estado       : {:?}", info.whpx);
     println!("  Detalle           : {}", info.whpx.description());
     println!();
-    println!("Capsule Runtime: OK (VMM, vCPU x86-64, Direct Boot y UART 16550 listos)");
+    println!("Capsule Runtime: OK (VMM, vCPU x86-64, Direct Boot, UART, disco y plataforma M7 listos)");
     println!("==================================================");
 }
 
@@ -533,6 +534,134 @@ fn run_test_cow() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Plataforma Virtual (Hito M7)       ");
+    println!("==================================================");
+
+    // PIC 8259: inicialización, IMR y reconocimiento de IRQ con EOI
+    let mut pic = capsule_devices::Pic8259::new();
+    pic.write_io(0x20, 0x11, 1);
+    pic.write_io(0xA0, 0x11, 1);
+    pic.write_io(0x21, 0x20, 1); // base maestro 0x20
+    pic.write_io(0xA1, 0x28, 1); // base esclavo 0x28
+    pic.write_io(0x21, 0x04, 1); // cascada IRQ2
+    pic.write_io(0xA1, 0x02, 1);
+    pic.write_io(0x21, 0x01, 1); // 8086
+    pic.write_io(0xA1, 0x01, 1);
+    pic.write_io(0x21, 0x00, 1); // desenmascarar
+    pic.write_io(0xA1, 0x00, 1);
+    pic.raise_irq(0);
+    let irq0_vec = pic
+        .get_interrupt()
+        .ok_or("PIC: no se obtuvo vector para IRQ0")?;
+    assert_eq!(irq0_vec, 0x20, "IRQ0 debe vectorizarse en 0x20");
+    pic.write_io(0x20, 0x20, 1); // EOI maestro
+    assert_eq!(pic.master_isr() & 0x01, 0, "PIC: EOI debe limpiar ISR de IRQ0");
+    pic.raise_irq(14); // esclavo IRQ6
+    let irq14_vec = pic
+        .get_interrupt()
+        .ok_or("PIC: no se obtuvo vector para IRQ14")?;
+    assert_eq!(irq14_vec, 0x2E, "IRQ14 debe vectorizarse en 0x2E vía cascada");
+    pic.write_io(0xA0, 0x20, 1); // EOI esclavo
+    pic.write_io(0x20, 0x20, 1); // EOI maestro (IRQ2 cascada)
+    println!("  [OK] PIC 8259: init, IMR, IRQ0/IRQ14, cascada y EOI");
+
+    // PIT 8254: canal 0 genera pulsos IRQ0 en modo 2
+    let mut pit = capsule_devices::Pit8254::new();
+    pit.write_io(0x43, 0x34, 1); // CH0, lo/hi, modo 2
+    pit.write_io(0x40, 0x04, 1);
+    pit.write_io(0x40, 0x00, 1);
+    let mut pulses = 0u32;
+    for _ in 0..16 {
+        if pit.tick(1) {
+            pulses += 1;
+        }
+    }
+    assert!(pulses >= 1, "PIT: no se observaron pulsos IRQ0 en canal 0");
+    println!("  [OK] PIT 8254: programación de canal 0 y pulsos IRQ0");
+
+    // RTC/CMOS: hora legible y CMOS RAM conservada
+    let mut rtc = capsule_devices::RtcCmos::new();
+    rtc.write_io(0x70, 0x00, 1);
+    let sec = rtc.read_io(0x71, 1) & 0xFF;
+    rtc.write_io(0x70, 0x02, 1);
+    let min = rtc.read_io(0x71, 1) & 0xFF;
+    rtc.write_io(0x70, 0x04, 1);
+    let hour = rtc.read_io(0x71, 1) & 0xFF;
+    assert!(
+        sec <= 59 && min <= 59 && hour <= 23,
+        "RTC: valores de hora fuera de rango"
+    );
+    rtc.write_io(0x70, 0x10, 1);
+    rtc.write_io(0x71, 0x5A, 1);
+    rtc.write_io(0x70, 0x10, 1);
+    assert_eq!(
+        rtc.read_io(0x71, 1) & 0xFF,
+        0x5A,
+        "RTC/CMOS: registro 0x10 no conservó valor"
+    );
+    println!("  [OK] RTC/CMOS: lectura de hora y RAM CMOS preservada");
+
+    // PCI config mechanism #1 (0xCF8/0xCFC), bus vacío
+    let mut pci = capsule_devices::PciBus::new();
+    pci.write_io(0xCF8, 0x8000_0000, 4);
+    assert_eq!(
+        pci.read_io(0xCF8, 4),
+        0x8000_0000,
+        "PCI: 0xCF8 debe conservar dirección"
+    );
+    assert_eq!(
+        pci.read_io(0xCFC, 2),
+        0xFFFF,
+        "PCI: Vendor ID debe ser 0xFFFF en bus vacío"
+    );
+    assert_eq!(
+        pci.read_io(0xCFC, 4),
+        0xFFFF_FFFF,
+        "PCI: bus vacío debe devolver 0xFFFF_FFFF"
+    );
+    pci.write_io(0xCF8, 0x0000_0000, 4);
+    assert_eq!(
+        pci.read_io(0xCFC, 1),
+        0xFF,
+        "PCI: lecturas con config deshabilitada deben devolver 0xFF"
+    );
+    println!("  [OK] PCI (CF8/CFC): direccionamiento y enumeración básica (bus vacío)");
+
+    // Integración VM: los puertos de plataforma deben ser manejados por dispositivos registrados
+    let mut vm = VirtualMachine::new(VmConfig {
+        name: "PlatformTestVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    })?;
+    // Leer 0xCF8 (4 bytes) -> EAX debe ser 0 en estado inicial del bus PCI
+    let code = [
+        0xBA, 0xF8, 0x0C, 0x00, 0x00, // mov edx, 0x0CF8
+        0xED,                         // in eax, dx
+        0x89, 0x03,                   // mov [ebx], eax (ebx=0 al inicio)
+        0xF4,                         // hlt
+    ];
+    vm.load_code(GuestAddress::new(0), &code)?;
+    vm.set_rip(0);
+    let exit = vm.run()?;
+    assert_eq!(exit, VcpuExit::Halt, "VM de plataforma debe terminar con HLT");
+    let mut out = [0u8; 4];
+    vm.memory.read_bytes(GuestAddress::new(0), &mut out)?;
+    let pci_addr = u32::from_le_bytes(out);
+    assert_eq!(
+        pci_addr, 0x0000_0000,
+        "VM: lectura de 0xCF8 debe estar manejada por PCI"
+    );
+    println!("  [OK] VM: dispositivos de plataforma registrados y accesibles por E/S");
+
+    println!("--------------------------------------------------");
+    println!("  Plataforma virtual M7 (PIC/PIT/RTC/PCI): ÉXITO");
+    println!("  Nota: sin inyección de interrupciones en CPU aún (requiere IDT/CLI/STI/IRET).");
+    println!("==================================================");
+    Ok(())
+}
+
 fn open_disk_image_for_boot(path: &str) -> Result<Box<dyn BlockDevice>, Box<dyn std::error::Error>> {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".vhd") {
@@ -581,7 +710,7 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
         }
         println!("--------------------------------------------------");
         println!("  Arranque desde disco (imagen): completado");
-        println!("  Nota: Soporta RAW y VHD fixed (512B). CPU/ISA y firmware limitados; bootloaders reales pueden requerir M12/M7.");
+        println!("  Nota: Soporta RAW y VHD fixed (512B). CPU/ISA y firmware limitados; bootloaders reales pueden requerir M12 y entrega de interrupciones en CPU.");
         println!("==================================================");
         return Ok(());
     }
@@ -841,7 +970,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(74, 222, 128));
             draw_text_line(
                 hdc,
-                "OK - UART, Linux Direct Boot, ATA/IDE PIO y Persistencia COW (Hitos M0-M6 completados)",
+                "OK - UART, boot Linux, ATA/IDE, COW y plataforma PIC/PIT/RTC/PCI (Hitos M0-M7 completados)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -853,7 +982,7 @@ unsafe extern "system" fn window_proc(
             SetTextColor(hdc, rgb(220, 225, 235));
             draw_text_line(
                 hdc,
-                "M5-M6: RAW/VHD fixed, READ/WRITE/FLUSH/MULTIPLE, boot LBA0->0x7C00, overlay COW (test-disk/test-boot-disk/test-cow)",
+                "M5-M7: RAW/VHD+COW, boot LBA0->0x7C00, PIC 8259, PIT 8254, RTC/CMOS, PCI y test-platform",
                 48,
                 current_y,
                 rect.right - 48,
@@ -866,7 +995,7 @@ unsafe extern "system" fn window_proc(
             SelectObject(hdc, code_font);
             draw_text_line(
                 hdc,
-                "Siguiente paso: M7 (PIC/APIC + INTRQ), M12 (firmware/boot real) y formatos dinámicos/virtio-blk",
+                "Siguiente paso: inyección de IRQ en CPU (IDT/CLI/STI/IRET), M8 (red) y M12 (firmware/boot real)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -1039,6 +1168,14 @@ fn main() {
     if args.iter().any(|arg| arg == "test-cow" || arg == "--test-cow") {
         if let Err(e) = run_test_cow() {
             eprintln!("Error en test-cow: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-platform" || arg == "--test-platform") {
+        if let Err(e) = run_test_platform() {
+            eprintln!("Error en test-platform: {}", e);
             std::process::exit(1);
         }
         return;

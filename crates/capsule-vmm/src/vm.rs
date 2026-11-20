@@ -7,7 +7,7 @@ use crate::traits::VmmError;
 use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
-use capsule_devices::{IdeController, Uart16550, COM1_BASE};
+use capsule_devices::{IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550, COM1_BASE};
 use capsule_memory::GuestMemory;
 use capsule_storage::BlockDevice;
 
@@ -21,7 +21,8 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     /// Inicializa una nueva máquina virtual con la configuración dada.
-    /// Registra automáticamente el puerto serie COM1 (UART 16550) en el puerto I/O 0x3F8.
+    /// Registra dispositivos de plataforma básicos: COM1 (UART 16550), PIC 8259, PIT 8254,
+    /// RTC/CMOS y un bus PCI simplificado (config mechanism #1).
     pub fn new(config: VmConfig) -> Result<Self, VmmError> {
         let mem_size = config.memory_size.as_bytes() as usize;
         let memory = GuestMemory::new(mem_size).map_err(|e| {
@@ -38,8 +39,12 @@ impl VirtualMachine {
             status: VmStatus::Created,
         };
 
-        // Dispositivo estándar: COM1 UART 16550 en 0x3F8
+        // Dispositivos estándar de plataforma (M7)
         vm.add_device(Box::new(Uart16550::new(COM1_BASE)));
+        vm.add_device(Box::new(Pic8259::new()));
+        vm.add_device(Box::new(Pit8254::new()));
+        vm.add_device(Box::new(RtcCmos::new()));
+        vm.add_device(Box::new(PciBus::new()));
 
         Ok(vm)
     }
@@ -146,11 +151,55 @@ impl VirtualMachine {
         self.vcpu.regs.rip
     }
 
+    fn tick_platform(&mut self) {
+        // Avance aproximado de dispositivos temporizados (1 "tick" por instrucción).
+        // PIT canal 0 genera IRQ0 al expirar según su modo/programación.
+        let mut pit_irq0 = false;
+        for dev in &mut self.devices {
+            if let Some(pit) = dev.as_any_mut().downcast_mut::<Pit8254>() {
+                pit_irq0 = pit.tick(1);
+                break;
+            }
+        }
+        // RTC: refresco ligero de hora en cada tick (modelo simplificado).
+        for dev in &mut self.devices {
+            if let Some(rtc) = dev.as_any_mut().downcast_mut::<RtcCmos>() {
+                rtc.tick();
+                break;
+            }
+        }
+
+        // Cableado de IRQs de plataforma hacia PIC 8259.
+        // - IRQ0: PIT (pulso en flanco aproximado por tick)
+        // - IRQ14: IDE primario (nivel mientras irq_pending && !nIEN)
+        let mut ide_irq14 = false;
+        for dev in &mut self.devices {
+            if let Some(ide) = dev.as_any_mut().downcast_mut::<IdeController>() {
+                ide_irq14 = ide.irq_pending();
+                break;
+            }
+        }
+
+        for dev in &mut self.devices {
+            if let Some(pic) = dev.as_any_mut().downcast_mut::<Pic8259>() {
+                if pit_irq0 {
+                    pic.raise_irq(0);
+                }
+                pic.set_irq_level(14, ide_irq14);
+                break;
+            }
+        }
+    }
+
     /// Ejecuta el bucle principal de la vCPU hasta alcanzar una condición de salida (HALT, Error, etc.).
+    /// El bucle avanza dispositivos de plataforma (PIT/RTC) y actualiza líneas IRQ básicas (PIC, IDE IRQ14)
+    /// en cada paso. La inyección de interrupciones en la CPU software no está implementada aún; los
+    /// guests deben usar sondeo (polling) o esperar soporte futuro de interrupciones/IDT.
     pub fn run(&mut self) -> Result<VcpuExit, VmmError> {
         self.status = VmStatus::Running;
 
         loop {
+            self.tick_platform();
             match self.vcpu.step(&mut self.memory) {
                 Ok(None) => {
                     continue;
@@ -168,6 +217,9 @@ impl VirtualMachine {
                             break;
                         }
                     }
+
+                    // La E/S puede cambiar estado de dispositivos (p.ej. PIC/IDE); refrescar IRQs.
+                    self.tick_platform();
 
                     if !handled {
                         return Ok(VcpuExit::IoOut { port, data, size });
@@ -194,6 +246,9 @@ impl VirtualMachine {
                             break;
                         }
                     }
+
+                    // Lecturas de estado (IDE/PIC/RTC) pueden reconocer/limpiar condiciones.
+                    self.tick_platform();
 
                     if !handled {
                         return Ok(VcpuExit::IoIn { port, size });

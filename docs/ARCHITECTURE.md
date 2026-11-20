@@ -97,17 +97,18 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-devices`**:
   * Enrutador de buses: Port I/O (espacio de direcciones de 16 bits `in`/`out`) y MMIO.
-  * Dispositivos de plataforma estándar de PC:
+  * Dispositivos de plataforma implementados (M4-M7):
     * Puerto serie UART 16550 (COM1 en 0x3F8) para salida de consola y depuración del kernel.
-    * Temporizador PIT 8254 y CMOS/RTC (puertos 0x70/0x71).
-    * Controlador de interrupciones PIC 8259 heredado y APIC local/IO-APIC.
-    * Bus PCI sintético para descubrimiento de dispositivos periféricos.
+    * Controlador de interrupciones PIC 8259 dual (maestro/esclavo) con ICW/OCW, IMR/ISR/IRR, cascada y EOI.
+    * Temporizador PIT 8254 (canales 0-2, modos básicos) y RTC/CMOS MC146818 mínimo (0x70/0x71).
+    * Bus PCI simplificado (mecanismo #1 de configuración, `0xCF8/0xCFC`) con enumeración básica de bus vacío.
+  * Pendiente: inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET), APIC local/IO-APIC, dispositivos PCI reales y mayor fidelidad temporal.
 
 * **`capsule-storage`**:
   * Abstracción de medios de almacenamiento (`BlockDevice`) y backends implementados: RAM (`MemoryDisk`), RAW, VHD fixed (512-byte) y overlay COW (`CowOverlayDisk`, bitmap por sector, base inmutable).
   * Formatos/funciones planeadas: VHD dynamic, VHDX, QCOW2 y `virtio-blk`.
   * Controladores de almacenamiento virtual:
-    * IDE / ATA PIO primario (maestro, LBA28) implementado para M5/M6 (sin DMA/INTRQ cableado a PIC/APIC todavía).
+    * IDE / ATA PIO primario (maestro, LBA28) implementado para M5/M6 (sin DMA). IRQ14 se refleja a nivel de PIC según estado IDE (`irq_pending && !nIEN`), pero la CPU software aún no inyecta interrupciones.
     * `virtio-blk` planeado para alto rendimiento en guests modernos.
 
 * **`capsule-display`**:

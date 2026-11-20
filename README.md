@@ -108,12 +108,20 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Integración VM: `attach_primary_master_disk`, E/S PIO 8/16/32-bit y arranque mínimo desde disco (`boot_from_primary_master_disk`: carga LBA0 en `0x7C00`, `RIP=0x7C00`).
   - Validación: transferencias PIO (incl. multi-sector y `sector_count=0` => 256 sectores), guest READ/WRITE/FLUSH con persistencia en RAW/VHD fixed, y boot sector con carga multi-sector vía IDE.
   - Comandos CLI: `capsule.exe test-storage`, `capsule.exe test-disk`, `capsule.exe test-boot-disk [path]` (self-test o arranque experimental de imagen RAW/VHD fixed 512-byte).
-  - Alcance diferido: INTRQ real vía PIC/APIC (M7), mayor compatibilidad ATA/drivers y arranque real desde disco/firmware (M12), y formatos dinámicos o `virtio-blk`.
+  - Alcance diferido: inyección de interrupciones en la CPU software (IDT/CLI/STI/IRET) para atender IRQs del PIC/PIT/IDE; mayor compatibilidad ATA/drivers y arranque real desde disco/firmware (M12); y formatos dinámicos o `virtio-blk`.
 * [x] **Hito M6 - Copy-on-Write Persistence**:
   - Overlay COW (`CowOverlayDisk`) sobre cualquier `BlockDevice` base (p. ej. RAW, VHD fixed), con bitmap por sector y persistencia en archivo de overlay.
   - Lectura transparente: sectores no modificados se leen de la base; sectores escritos se resuelven desde el overlay. Las escrituras nunca modifican la imagen base.
   - Validación de geometría base/overlay, reapertura con persistencia de cambios y operación a través del stack ATA/IDE+VM (guest READ/WRITE/FLUSH) sin alterar la base.
   - Comando CLI de validación: `capsule.exe test-cow`.
+* [x] **Hito M7 - Virtual Platform Devices (PIC/PIT/RTC/PCI)**:
+  - PIC 8259 dual (maestro/esclavo) con ICW/OCW, IMR/ISR/IRR, cascada y EOI; IRQ0 (PIT) e IRQ14 (IDE primario, nivel según `irq_pending && !nIEN`) reflejadas en el PIC.
+  - PIT 8254 (canales 0-2, modos básicos) con avance por tick de vCPU y pulsos IRQ0 (canal 0).
+  - RTC/CMOS MC146818 mínimo (puertos `0x70/0x71`): hora/fecha básica y RAM CMOS preservada.
+  - Bus PCI simplificado (mecanismo #1, `0xCF8/0xCFC`) con enumeración básica de bus vacío (`0xFFFF_FFFF`).
+  - Integración en VM: dispositivos de plataforma registrados por defecto y refresco de timers/IRQs en el bucle de ejecución.
+  - Comando CLI de validación: `capsule.exe test-platform`.
+  - Nota: la inyección de interrupciones en la CPU software (IDT/CLI/STI/IRET) no está implementada aún; los guests deben usar sondeo (polling).
 
 ---
 
@@ -180,6 +188,12 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 # Guest ATA PIO READ/WRITE/FLUSH sobre overlay COW (bases RAW y VHD fixed)
 # Valida que la imagen base permanezca intacta y los cambios persistan en el overlay
 .\target\release\capsule.exe test-cow
+```
+
+### Verificar plataforma virtual (PIC/PIT/RTC/PCI, Hito M7)
+```powershell
+# Valida PIC 8259, PIT 8254, RTC/CMOS y bus PCI (config 0xCF8/0xCFC), e integración básica en VM
+.\target\release\capsule.exe test-platform
 ```
 
 ### Ejecutar la batería de pruebas automatizadas
