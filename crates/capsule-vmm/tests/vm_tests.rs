@@ -139,3 +139,93 @@ fn test_vm_linux_direct_boot_protocol() {
         "El kernel debe haber leído cmd_line_ptr = 0x8000 desde boot_params en RSI"
     );
 }
+
+#[test]
+fn test_vm_ide_pio_identify_and_read() {
+    use capsule_storage::{BlockDevice, MemoryDisk, DEFAULT_SECTOR_SIZE};
+
+    let config = VmConfig {
+        name: "IdePioVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    };
+    let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
+
+    // Disco con patrón conocido en sector 0 (LBA 0)
+    let mut disk = MemoryDisk::new(64, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut sector0 = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+    for (i, b) in sector0.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(7).wrapping_add(0x11);
+    }
+    disk.write_sectors(0, 1, &sector0).expect("seed sector 0");
+    vm.attach_primary_master_disk(Box::new(disk))
+        .expect("attach ide disk");
+
+    // --- Fase 1: IDENTIFY (0xEC) y guardar status en 0x0500 ---
+    // mov dx,0x1F6; mov al,0xE0; out dx,al
+    // mov dx,0x1F7; mov al,0xEC; out dx,al
+    // in  al,dx
+    // mov ebx,0x0500; mov [ebx],al
+    // hlt
+    let identify_code = [
+        0xBA, 0xF6, 0x01, 0x00, 0x00, // mov edx, 0x1F6
+        0xB0, 0xE0, // mov al, 0xE0
+        0xEE, // out dx, al
+        0xBA, 0xF7, 0x01, 0x00, 0x00, // mov edx, 0x1F7
+        0xB0, 0xEC, // mov al, 0xEC
+        0xEE, // out dx, al
+        0xEC, // in al, dx
+        0xBB, 0x00, 0x05, 0x00, 0x00, // mov ebx, 0x0500
+        0x88, 0x03, // mov [ebx], al
+        0xF4, // hlt
+    ];
+    vm.load_code(GuestAddress::new(0), &identify_code)
+        .expect("load identify");
+    vm.set_rip(0);
+    let exit = vm.run().expect("run identify");
+    assert_eq!(exit, VcpuExit::Halt);
+    let status = vm.memory.read_u8(GuestAddress::new(0x0500)).unwrap();
+    assert_eq!(status & 0x08, 0x08, "IDENTIFY debe activar DRQ, status=0x{status:02X}");
+    assert_eq!(status & 0x01, 0x00, "IDENTIFY no debe reportar error");
+
+    // --- Fase 2: READ SECTORS (LBA 0, count 1) a 0x1000 ---
+    // Programar registros tarea y comando 0x20, luego leer 128 dwords de 0x1F0.
+    // mov dx,0x1F6; mov al,0xE0; out dx,al
+    // mov dx,0x1F2; mov al,0x01; out dx,al
+    // mov dx,0x1F3; mov al,0x00; out dx,al
+    // mov dx,0x1F4; mov al,0x00; out dx,al
+    // mov dx,0x1F5; mov al,0x00; out dx,al
+    // mov dx,0x1F7; mov al,0x20; out dx,al
+    // mov dx,0x1F0; mov ebx,0x1000; mov ecx,128
+    // loop: in eax,dx; mov [ebx],eax; add ebx,4; dec ecx; jnz loop
+    // hlt
+    let read_code = [
+        0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE, // drive/head
+        0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE, // sector count = 1
+        0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE, // LBA low = 0
+        0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE, // LBA mid = 0
+        0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE, // LBA high = 0
+        0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE, // command READ SECTORS
+        0xBA, 0xF0, 0x01, 0x00, 0x00, // mov edx, 0x1F0 (data)
+        0xBB, 0x00, 0x10, 0x00, 0x00, // mov ebx, 0x1000 (buffer)
+        0xB9, 0x80, 0x00, 0x00, 0x00, // mov ecx, 128 (dwords)
+        // loop at offset 63:
+        0xED, // in eax, dx
+        0x89, 0x03, // mov [ebx], eax
+        0x83, 0xC3, 0x04, // add ebx, 4
+        0xFF, 0xC9, // dec ecx
+        0x75, 0xF6, // jnz loop (-10)
+        0xF4, // hlt
+    ];
+    vm.load_code(GuestAddress::new(0), &read_code)
+        .expect("load read code");
+    vm.set_rip(0);
+    let exit = vm.run().expect("run read");
+    assert_eq!(exit, VcpuExit::Halt);
+
+    let mut buf = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+    vm.memory
+        .read_bytes(GuestAddress::new(0x1000), &mut buf)
+        .expect("read buffer");
+    assert_eq!(buf, sector0, "El sector leído por ATA PIO debe coincidir con el disco");
+}
