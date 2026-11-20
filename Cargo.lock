@@ -27,12 +27,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "capsule-devices"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
+]
+
+[[package]]
 name = "capsule-gui"
 version = "0.1.0"
 dependencies = [
  "capsule-boot",
  "capsule-core",
  "capsule-cpu",
+ "capsule-devices",
  "capsule-memory",
  "capsule-vmm",
  "windows-sys",
@@ -53,6 +61,7 @@ dependencies = [
  "capsule-boot",
  "capsule-core",
  "capsule-cpu",
+ "capsule-devices",
  "capsule-memory",
 ]
 

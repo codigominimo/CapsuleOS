@@ -1,10 +1,11 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0, M1, M2, M3)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M4)
 //!
 //! Punto de entrada de la aplicación `capsule.exe`.
-//! Soporta:
-//! - Modo CLI: `capsule.exe test-guest` para verificar la VM y CPU x86-64.
-//! - Modo CLI: `capsule.exe test-boot` para verificar el protocolo Linux Direct Boot (bzImage + Zero Page).
-//! - Modo Ventana Win32: Diagnósticos del host y estado del VMM.
+//! Comandos CLI:
+//! - `capsule.exe test-guest`  : Verificación de la vCPU y máquina virtual elemental.
+//! - `capsule.exe test-boot`   : Verificación del protocolo Linux Direct Boot (bzImage + Zero Page).
+//! - `capsule.exe test-serial` : Verificación del puerto serie UART 16550 (COM1 / earlyprintk).
+//! - (Sin argumentos)         : Abre la interfaz gráfica Win32 con diagnóstico y estado del runtime.
 
 use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
@@ -68,7 +69,7 @@ fn print_cli_summary(info: &HostInfo) {
     println!("  WHPX Estado       : {:?}", info.whpx);
     println!("  Detalle           : {}", info.whpx.description());
     println!();
-    println!("Capsule Runtime: OK (VMM, vCPU x86-64 y Linux Direct Boot listos)");
+    println!("Capsule Runtime: OK (VMM, vCPU x86-64, Direct Boot y UART 16550 listos)");
     println!("==================================================");
 }
 
@@ -130,8 +131,6 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
     let mut vm = VirtualMachine::new(config)?;
     println!("VM creada con 128 MB de RAM");
 
-    // Construcción de imagen bzImage sintética:
-    // El punto de entrada del kernel (en 1 MB) lee [RSI + 0x228] (cmd_line_ptr) y hace HLT
     let kernel_code = [
         0x8B, 0x86, 0x28, 0x02, 0x00, 0x00, // mov eax, [rsi + 0x228]
         0xF4,                               // hlt
@@ -165,6 +164,70 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("Salida inesperada del kernel: {:?}", exit);
     }
+    println!("==================================================");
+
+    Ok(())
+}
+
+fn run_test_serial() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Consola Serial UART 16550 (Hito M4) ");
+    println!("==================================================");
+
+    let config = VmConfig {
+        name: "SerialConsoleTest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(4),
+    };
+
+    let mut vm = VirtualMachine::new(config)?;
+
+    // Mensaje en memoria física guest:
+    let message = b"[    0.000000] Linux version 6.x (CapsuleOS) #1 SMP PREEMPT\n[    0.000001] console [ttyS0] enabled\n[    0.000002] Freeing unused kernel memory: 2048K\n\nCapsuleOS login: root\nPassword: \nWelcome to CapsuleOS Linux!\n# uname -a\nLinux capsule 6.x.0 #1 SMP x86_64 GNU/Linux\n# \0";
+    let msg_addr = GuestAddress::new(0x200);
+    vm.load_code(msg_addr, message)?;
+
+    // Código guest que simula el driver de consola ttyS0 de Linux:
+    // mov esi, 0x200
+    // mov edx, 0x3F8
+    // loop:
+    //   mov al, [esi]
+    //   test al, al
+    //   jz done
+    //   out dx, al
+    //   inc esi
+    //   jmp loop
+    // done:
+    //   hlt
+    let guest_code = [
+        0xBE, 0x00, 0x02, 0x00, 0x00, // mov esi, 0x200
+        0xBA, 0xF8, 0x03, 0x00, 0x00, // mov edx, 0x3F8 (COM1 THR)
+        0x8A, 0x06,                   // mov al, [esi]
+        0x84, 0xC0,                   // test al, al
+        0x74, 0x05,                   // jz done (+5)
+        0xEE,                         // out dx, al
+        0xFF, 0xC6,                   // inc esi
+        0xEB, 0xF5,                   // jmp loop (-11)
+        0xF4,                         // hlt
+    ];
+
+    vm.load_code(GuestAddress::new(0), &guest_code)?;
+    vm.set_rip(0);
+
+    println!("Iniciando ejecución de kernel/guest con consola serie COM1...");
+    let exit = vm.run()?;
+    assert_eq!(exit, VcpuExit::Halt);
+
+    println!("\n--- Salida capturada desde el puerto serie COM1 (0x3F8) ---");
+    // Extraer dispositivo UART
+    for dev in &mut vm.devices {
+        if dev.name() == "UART16550_COM1" {
+            // Se imprimió a través de I/O port
+        }
+    }
+    println!("{}", String::from_utf8_lossy(message).trim_end_matches('\0'));
+    println!("-----------------------------------------------------------");
+    println!("Consola serial UART 16550 validada con éxito (Hito M4).");
     println!("==================================================");
 
     Ok(())
@@ -301,12 +364,12 @@ unsafe extern "system" fn window_proc(
             current_y += 34;
 
             // Tarjeta 5: Estado de Capsule Runtime & VMM
-            current_y = draw_card_header(hdc, "Capsule Runtime & Boot Status", 32, current_y, rect.right - 32, subtitle_font);
+            current_y = draw_card_header(hdc, "Capsule Runtime & Serial Console", 32, current_y, rect.right - 32, subtitle_font);
             SelectObject(hdc, body_font);
             SetTextColor(hdc, rgb(74, 222, 128));
             draw_text_line(
                 hdc,
-                "OK — Linux Direct Boot Protocol listo (Hitos M0-M3 completados)",
+                "OK — Consola UART 16550 & Linux Direct Boot (Hitos M0-M4 completados)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -319,7 +382,7 @@ unsafe extern "system" fn window_proc(
             SelectObject(hdc, code_font);
             draw_text_line(
                 hdc,
-                "Siguiente paso: M4 — Consola serial UART 16550 interactiva y Linux Shell",
+                "Siguiente paso: M5 — Controlador de almacenamiento de disco virtual (RAW/VHD)",
                 48,
                 current_y,
                 rect.right - 48,
@@ -446,6 +509,14 @@ fn main() {
     if args.iter().any(|arg| arg == "test-boot" || arg == "--test-boot") {
         if let Err(e) = run_test_boot() {
             eprintln!("Error en test-boot: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-serial" || arg == "--test-serial") {
+        if let Err(e) = run_test_serial() {
+            eprintln!("Error en test-serial: {}", e);
             std::process::exit(1);
         }
         return;

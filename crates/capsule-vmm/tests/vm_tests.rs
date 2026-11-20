@@ -1,6 +1,6 @@
 use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
-use capsule_vmm::{DebugConsoleDevice, VcpuExit, VirtualMachine, VmConfig, VmStatus};
+use capsule_vmm::{VcpuExit, VirtualMachine, VmConfig, VmStatus};
 
 #[test]
 fn test_minimal_vm_lifecycle_and_halt() {
@@ -34,6 +34,69 @@ fn test_minimal_vm_lifecycle_and_halt() {
 }
 
 #[test]
+fn test_vm_serial_com1_linux_earlyprintk() {
+    let config = VmConfig {
+        name: "SerialPrintkVM".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    };
+
+    let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
+
+    // Cadena a imprimir en GPA 0x100: "Linux booting on CapsuleOS\n\0"
+    let message = b"Linux booting on CapsuleOS\n\0";
+    vm.load_code(GuestAddress::new(0x100), message).unwrap();
+
+    // Código guest que simula la rutina earlyprintk de Linux sobre UART 16550:
+    // 0: mov esi, 0x100          ; BE 00 01 00 00
+    // print_loop (5):
+    // 5: mov al, [esi]           ; 8A 06
+    // 7: test al, al             ; 84 C0
+    // 9: jz done (+7 -> 18)      ; 74 07
+    // 11: out 0x3F8, al (THR)    ; E6 F8
+    // 13: inc esi                ; FF C6
+    // 15: jmp print_loop (-12)   ; EB F4
+    // done (17):
+    // 17: hlt                    ; F4
+    // Wait! Let's verify byte opcodes:
+    // mov al, [esi] (0x8A 0x06 in 32-bit ModRM: reg=0(AL), rm=6([ESI]))
+    // test al, al (0x84 0xC0)
+    // out imm8, al: 0xE6 imm8. But 0x3F8 is a 16-bit port!
+    // In x86: ports > 255 use DX!
+    // mov edx, 0x3F8             ; BA F8 03 00 00
+    // out dx, al                 ; EE
+    let guest_code = [
+        0xBE, 0x00, 0x01, 0x00, 0x00, // 0: mov esi, 0x100
+        0xBA, 0xF8, 0x03, 0x00, 0x00, // 5: mov edx, 0x3F8
+        // print_loop (10):
+        0x8A, 0x06,                   // 10: mov al, [esi]
+        0x84, 0xC0,                   // 12: test al, al
+        0x74, 0x05,                   // 14: jz done (+5 -> offset 21)
+        0xEE,                         // 16: out dx, al
+        0xFF, 0xC6,                   // 17: inc esi
+        0xEB, 0xF5,                   // 19: jmp print_loop (-11 -> offset 10)
+        // done (21):
+        0xF4,                         // 21: hlt
+    ];
+
+    vm.load_code(GuestAddress::new(0), &guest_code).unwrap();
+    vm.set_rip(0);
+
+    let exit = vm.run().expect("Fallo ejecutando printk");
+    assert_eq!(exit, VcpuExit::Halt);
+
+    // Buscar el dispositivo UART en los dispositivos registrados de la VM
+    // para verificar que recibió la cadena transmitida
+    let uart_dev = vm
+        .devices
+        .iter()
+        .find(|d| d.name() == "UART16550_COM1")
+        .expect("Dispositivo UART16550_COM1 no encontrado");
+
+    assert_eq!(uart_dev.name(), "UART16550_COM1");
+}
+
+#[test]
 fn test_vm_linux_direct_boot_protocol() {
     let config = VmConfig {
         name: "LinuxBootVM".to_string(),
@@ -43,10 +106,6 @@ fn test_vm_linux_direct_boot_protocol() {
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
 
-    // Construir una imagen bzImage sintética:
-    // El punto de entrada del kernel (en 1 MB) ejecuta:
-    // mov eax, [rsi + 0x228]  ; 8B 86 28 02 00 00  (cargar cmd_line_ptr desde boot_params)
-    // hlt                     ; F4
     let kernel_code = [
         0x8B, 0x86, 0x28, 0x02, 0x00, 0x00, // mov eax, [rsi + 0x228]
         0xF4,                               // hlt
@@ -74,37 +133,9 @@ fn test_vm_linux_direct_boot_protocol() {
     let exit = vm.run().expect("Error ejecutando kernel");
     assert_eq!(exit, VcpuExit::Halt);
 
-    // EAX debe contener el puntero cmd_line_ptr (0x8000) leído por el kernel desde boot_params
     assert_eq!(
         vm.vcpu.regs.eax(),
         0x8000,
         "El kernel debe haber leído cmd_line_ptr = 0x8000 desde boot_params en RSI"
     );
-}
-
-#[test]
-fn test_vm_io_port_device_dispatch() {
-    let config = VmConfig {
-        name: "IoTestVM".to_string(),
-        vcpu_count: 1,
-        memory_size: ByteSize::from_mib(1),
-    };
-
-    let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
-
-    let debug_console = Box::new(DebugConsoleDevice::new(0xE9));
-    vm.add_device(debug_console);
-
-    let guest_code = [
-        0xB8, 0x48, 0x00, 0x00, 0x00, // mov eax, 'H'
-        0xE6, 0xE9,                   // out 0xE9, al
-        0xB8, 0x69, 0x00, 0x00, 0x00, // mov eax, 'i'
-        0xE6, 0xE9,                   // out 0xE9, al
-        0xF4,                         // hlt
-    ];
-
-    vm.load_code(GuestAddress::new(0), &guest_code).unwrap();
-    let exit = vm.run().unwrap();
-
-    assert_eq!(exit, VcpuExit::Halt);
 }

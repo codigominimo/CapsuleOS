@@ -1,5 +1,7 @@
 //! Abstracción de dispositivos virtuales (I/O ports y MMIO).
 
+use capsule_devices::Uart16550;
+
 pub trait VirtualDevice: Send {
     fn name(&self) -> &str;
     fn handles_port(&self, port: u16) -> bool;
@@ -7,7 +9,26 @@ pub trait VirtualDevice: Send {
     fn write_io(&mut self, port: u16, data: u32, size: u8);
 }
 
-/// Dispositivo básico de consola / puerto de depuración (ej. puerto 0xE9 o COM1 0x3F8).
+/// Implementación del trait VirtualDevice para el controlador serie UART 16550 estándar.
+impl VirtualDevice for Uart16550 {
+    fn name(&self) -> &str {
+        "UART16550_COM1"
+    }
+
+    fn handles_port(&self, port: u16) -> bool {
+        self.handles_port(port)
+    }
+
+    fn read_io(&mut self, port: u16, _size: u8) -> u32 {
+        self.read_io(port) as u32
+    }
+
+    fn write_io(&mut self, port: u16, data: u32, _size: u8) {
+        self.write_io(port, (data & 0xFF) as u8);
+    }
+}
+
+/// Dispositivo básico de consola / puerto de depuración en puerto simple (ej. puerto 0xE9).
 pub struct DebugConsoleDevice {
     pub name: String,
     pub port: u16,

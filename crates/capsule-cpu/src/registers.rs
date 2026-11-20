@@ -89,6 +89,41 @@ impl Registers {
         self.set_reg64(idx, val as u64);
     }
 
+    /// Retorna el valor de 8 bits de un registro.
+    pub fn get_reg8(&self, idx: u8, has_rex: bool) -> u8 {
+        if !has_rex && (4..=7).contains(&idx) {
+            // AH, CH, DH, BH
+            match idx {
+                4 => ((self.rax >> 8) & 0xFF) as u8,
+                5 => ((self.rcx >> 8) & 0xFF) as u8,
+                6 => ((self.rdx >> 8) & 0xFF) as u8,
+                7 => ((self.rbx >> 8) & 0xFF) as u8,
+                _ => unreachable!(),
+            }
+        } else {
+            (self.get_reg64(idx) & 0xFF) as u8
+        }
+    }
+
+    /// Establece el valor de 8 bits preservando los 56 bits superiores del registro de 64 bits.
+    pub fn set_reg8(&mut self, idx: u8, val: u8, has_rex: bool) {
+        if !has_rex && (4..=7).contains(&idx) {
+            let mask = !(0xFF00u64);
+            let shifted = (val as u64) << 8;
+            match idx {
+                4 => self.rax = (self.rax & mask) | shifted,
+                5 => self.rcx = (self.rcx & mask) | shifted,
+                6 => self.rdx = (self.rdx & mask) | shifted,
+                7 => self.rbx = (self.rbx & mask) | shifted,
+                _ => unreachable!(),
+            }
+        } else {
+            let cur = self.get_reg64(idx);
+            let new_val = (cur & !0xFF) | (val as u64);
+            self.set_reg64(idx, new_val);
+        }
+    }
+
     #[inline]
     pub fn eax(&self) -> u32 {
         self.rax as u32
@@ -129,7 +164,6 @@ impl Registers {
         self.rdx = val as u64;
     }
 
-    // Consultas de RFLAGS
     #[inline]
     pub fn zf(&self) -> bool {
         (self.rflags & FLAG_ZF) != 0

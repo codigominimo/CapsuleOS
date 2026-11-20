@@ -132,6 +132,41 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
+            // MOV r/m8, r8 (0x88)
+            0x88 => {
+                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let modrm = ModRm::parse(modrm_byte, &rex);
+                let reg_val = self.regs.get_reg8(modrm.reg, rex.present);
+                let rm_loc = OperandLocation::resolve_rm(&modrm, &rex, &mut self.regs, mem)?;
+                rm_loc.write_u8(reg_val, &rex, &mut self.regs, mem)?;
+                Ok(None)
+            }
+
+            // MOV r8, r/m8 (0x8A)
+            0x8A => {
+                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let modrm = ModRm::parse(modrm_byte, &rex);
+                let rm_loc = OperandLocation::resolve_rm(&modrm, &rex, &mut self.regs, mem)?;
+                let byte_val = rm_loc.read_u8(&rex, &self.regs, mem)?;
+                self.regs.set_reg8(modrm.reg, byte_val, rex.present);
+                Ok(None)
+            }
+
+            // TEST r/m8, r8 (0x84)
+            0x84 => {
+                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let modrm = ModRm::parse(modrm_byte, &rex);
+                let reg_val = self.regs.get_reg8(modrm.reg, rex.present);
+                let rm_loc = OperandLocation::resolve_rm(&modrm, &rex, &mut self.regs, mem)?;
+                let rm_val = rm_loc.read_u8(&rex, &self.regs, mem)?;
+                let res = rm_val & reg_val;
+                update_logic_flags_u64(&mut self.regs.rflags, res as u64, false);
+                Ok(None)
+            }
+
             // MOV r, r/m (0x8B)
             0x8B => {
                 let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;

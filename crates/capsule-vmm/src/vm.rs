@@ -7,6 +7,7 @@ use crate::traits::VmmError;
 use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
+use capsule_devices::{Uart16550, COM1_BASE};
 use capsule_memory::GuestMemory;
 
 pub struct VirtualMachine {
@@ -19,6 +20,7 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     /// Inicializa una nueva máquina virtual con la configuración dada.
+    /// Registra automáticamente el puerto serie COM1 (UART 16550) en el puerto I/O 0x3F8.
     pub fn new(config: VmConfig) -> Result<Self, VmmError> {
         let mem_size = config.memory_size.as_bytes() as usize;
         let memory = GuestMemory::new(mem_size).map_err(|e| {
@@ -27,13 +29,18 @@ impl VirtualMachine {
 
         let vcpu = SimpleVcpu::new(0);
 
-        Ok(Self {
+        let mut vm = Self {
             config,
             memory,
             vcpu,
             devices: Vec::new(),
             status: VmStatus::Created,
-        })
+        };
+
+        // Dispositivo estándar: COM1 UART 16550 en 0x3F8
+        vm.add_device(Box::new(Uart16550::new(COM1_BASE)));
+
+        Ok(vm)
     }
 
     /// Registra un dispositivo virtual en la máquina.
@@ -67,11 +74,8 @@ impl VirtualMachine {
         .map_err(|e| VmmError::InitializationFailed(e))?;
 
         // Configuración de registros para Linux Boot Protocol:
-        // RIP: Punto de entrada del kernel (0x100000)
         self.vcpu.regs.rip = boot_info.entry_rip;
-        // RSI: Puntero a la estructura boot_params (Zero-Page en 0x7000)
         self.vcpu.regs.rsi = boot_info.boot_params_addr.raw();
-        // Limpiar registros según especificación
         self.vcpu.regs.rax = 0;
         self.vcpu.regs.rbx = 0;
         self.vcpu.regs.rcx = 0;

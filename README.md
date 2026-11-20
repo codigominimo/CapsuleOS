@@ -97,7 +97,12 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Creación de tablas de páginas de 4 niveles (PML4) con *identity mapping* de 1 GB en páginas de 2MB.
   - Carga de línea de comandos del kernel e initramfs.
   - Comando CLI de validación: `capsule.exe test-boot`.
-* [ ] **Hito M4 — Consola Serial UART 16550 y Linux Shell** *(Próximo)*
+* [x] **Hito M4 — Consola Serial UART 16550 y Linux Shell**:
+  - Emulación completa de UART 16550 PC estándar (puerto COM1 en `0x3F8` a `0x3FF`).
+  - Registros de línea (`LCR`), divisor de baudios (`DLL`/`DLM` vía `DLAB`), transmisor (`THR`), receptor (`RBR`) y estado (`LSR` con `THRE` y `DR`).
+  - Recepción de logs `earlyprintk` y soporte para consola ttyS0.
+  - Comando CLI de validación: `capsule.exe test-serial`.
+* [ ] **Hito M5 — Disco Virtual y Almacenamiento (RAW / VHD)** *(Próximo)*
 
 ---
 

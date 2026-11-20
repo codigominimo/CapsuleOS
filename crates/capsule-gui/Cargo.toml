@@ -14,6 +14,7 @@ capsule-core = { path = "../capsule-core" }
 capsule-memory = { path = "../capsule-memory" }
 capsule-cpu = { path = "../capsule-cpu" }
 capsule-boot = { path = "../capsule-boot" }
+capsule-devices = { path = "../capsule-devices" }
 capsule-vmm = { path = "../capsule-vmm" }
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

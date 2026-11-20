@@ -31,9 +31,9 @@ impl RexPrefix {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ModRm {
-    pub mode: u8,   // 2 bits: 0, 1, 2, 3
-    pub reg: u8,    // 3 bits (0..7) extendible con REX.R -> (0..15)
-    pub rm: u8,     // 3 bits (0..7) extendible con REX.B -> (0..15)
+    pub mode: u8,
+    pub reg: u8,
+    pub rm: u8,
 }
 
 impl ModRm {
@@ -49,7 +49,6 @@ impl ModRm {
     }
 }
 
-/// Destino o fuente de un operando: o bien un registro o bien una dirección de memoria física.
 #[derive(Debug, Clone, Copy)]
 pub enum OperandLocation {
     Register(u8),
@@ -57,7 +56,6 @@ pub enum OperandLocation {
 }
 
 impl OperandLocation {
-    /// Resuelve la ubicación del operando R/M a partir de ModR/M, RIP y memoria.
     pub fn resolve_rm(
         modrm: &ModRm,
         rex: &RexPrefix,
@@ -65,21 +63,17 @@ impl OperandLocation {
         mem: &GuestMemory,
     ) -> Result<Self, String> {
         if modrm.mode == 3 {
-            // Modo registro directo
             Ok(OperandLocation::Register(modrm.rm))
         } else {
-            // Modo memoria
             let mut addr: u64;
 
             if (modrm.rm & 0x07) == 5 && modrm.mode == 0 {
-                // Direccionamiento relativo a RIP: [RIP + disp32]
                 let disp = mem
                     .read_u32(GuestAddress::new(regs.rip))
                     .map_err(|e| format!("Error leyendo disp32 para RIP-relative: {}", e))? as i32 as i64;
                 regs.rip += 4;
                 addr = (regs.rip as i64).wrapping_add(disp) as u64;
             } else if (modrm.rm & 0x07) == 4 {
-                // SIB byte
                 let sib = mem
                     .read_u8(GuestAddress::new(regs.rip))
                     .map_err(|e| format!("Error leyendo byte SIB: {}", e))?;
@@ -115,7 +109,6 @@ impl OperandLocation {
                     addr = (addr as i64).wrapping_add(disp) as u64;
                 }
             } else {
-                // Base register + desplazamiento opcional
                 let base_val = regs.get_reg64(modrm.rm);
                 addr = base_val;
 
@@ -138,7 +131,29 @@ impl OperandLocation {
         }
     }
 
-    /// Lee el valor del operando (32 o 64 bits).
+    /// Lee un byte del operando (modo 8 bits).
+    pub fn read_u8(&self, rex: &RexPrefix, regs: &Registers, mem: &GuestMemory) -> Result<u8, String> {
+        match *self {
+            OperandLocation::Register(reg) => Ok(regs.get_reg8(reg, rex.present)),
+            OperandLocation::Memory(addr) => {
+                mem.read_u8(addr).map_err(|e| format!("Fallo leyendo u8 en {}: {}", addr, e))
+            }
+        }
+    }
+
+    /// Escribe un byte en el operando (modo 8 bits).
+    pub fn write_u8(&self, val: u8, rex: &RexPrefix, regs: &mut Registers, mem: &mut GuestMemory) -> Result<(), String> {
+        match *self {
+            OperandLocation::Register(reg) => {
+                regs.set_reg8(reg, val, rex.present);
+                Ok(())
+            }
+            OperandLocation::Memory(addr) => {
+                mem.write_u8(addr, val).map_err(|e| format!("Fallo escribiendo u8 en {}: {}", addr, e))
+            }
+        }
+    }
+
     pub fn read_val(
         &self,
         is_64bit: bool,
@@ -166,7 +181,6 @@ impl OperandLocation {
         }
     }
 
-    /// Escribe el valor en el operando (32 o 64 bits).
     pub fn write_val(
         &self,
         val: u64,
