@@ -11,7 +11,8 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M0** | **Host Detection & Window** | Workspace Rust, ventana nativa Win32, detección de CPU, RAM y WHPX | **Completado** |
 | **M1** | **Minimal VM Execution** | VMM elemental, asignación de memoria guest, ejecución de instrucciones simples y detección de HLT | **Completado** |
 | **M2** | **CPU Emulator (x86_64)** | Intérprete x86_64 software: registros, decodificación básica, memoria y saltos | **Completado** |
-| **M3** | **Direct Linux Boot** | Soporte del protocolo de arranque de Linux (bzImage direct boot) y carga de kernel | **Siguiente** |
+| **M3** | **Direct Linux Boot** | Soporte del protocolo de arranque de Linux (bzImage direct boot) y carga de kernel | **Completado** |
+| **M4** | **Linux Console & Shell** | Arranque de Linux con initramfs BusyBox y consola interactiva COM1/UART | **Siguiente** |
 | **M4** | **Linux Console & Shell** | Arranque de Linux con initramfs BusyBox y consola interactiva COM1/UART | Pendiente |
 | **M5** | **Virtual Disk (RAW/VHD)** | Controlador de almacenamiento de bloque (IDE / virtio-blk) con imagen de disco | Pendiente |
 | **M6** | **Copy-on-Write Persistence** | Persistencia mediante overlay COW sin modificar la imagen base | Pendiente |

@@ -4,6 +4,7 @@ use crate::config::VmConfig;
 use crate::device::VirtualDevice;
 use crate::state::{VcpuExit, VmStatus};
 use crate::traits::VmmError;
+use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, SimpleVcpu};
 use capsule_memory::GuestMemory;
@@ -48,6 +49,39 @@ impl VirtualMachine {
         Ok(())
     }
 
+    /// Carga un kernel Linux real o sintético según el protocolo de arranque x86 directo (bzImage direct boot).
+    /// Configura las tablas de páginas PML4, la Zero Page (boot_params), la línea de comandos,
+    /// el initramfs y los registros de arranque (`RSI` -> `boot_params`, `RIP` -> kernel entry).
+    pub fn load_linux(
+        &mut self,
+        kernel_bytes: &[u8],
+        cmdline: &str,
+        initramfs_bytes: Option<&[u8]>,
+    ) -> Result<LinuxBootInfo, VmmError> {
+        let boot_info = LinuxKernelLoader::load(
+            &mut self.memory,
+            kernel_bytes,
+            cmdline,
+            initramfs_bytes,
+        )
+        .map_err(|e| VmmError::InitializationFailed(e))?;
+
+        // Configuración de registros para Linux Boot Protocol:
+        // RIP: Punto de entrada del kernel (0x100000)
+        self.vcpu.regs.rip = boot_info.entry_rip;
+        // RSI: Puntero a la estructura boot_params (Zero-Page en 0x7000)
+        self.vcpu.regs.rsi = boot_info.boot_params_addr.raw();
+        // Limpiar registros según especificación
+        self.vcpu.regs.rax = 0;
+        self.vcpu.regs.rbx = 0;
+        self.vcpu.regs.rcx = 0;
+        self.vcpu.regs.rdx = 0;
+        self.vcpu.regs.rdi = 0;
+        self.vcpu.regs.rbp = 0;
+
+        Ok(boot_info)
+    }
+
     /// Establece el puntero de instrucción (RIP) de la vCPU.
     pub fn set_rip(&mut self, rip: u64) {
         self.vcpu.regs.rip = rip;
@@ -65,7 +99,6 @@ impl VirtualMachine {
         loop {
             match self.vcpu.step(&mut self.memory) {
                 Ok(None) => {
-                    // Instrucción normal ejecutada, continuar ciclo
                     continue;
                 }
                 Ok(Some(CpuExitReason::Halt)) => {
@@ -73,7 +106,6 @@ impl VirtualMachine {
                     return Ok(VcpuExit::Halt);
                 }
                 Ok(Some(CpuExitReason::IoOut { port, data, size })) => {
-                    // Verificar si un dispositivo virtual maneja este puerto
                     let mut handled = false;
                     for dev in &mut self.devices {
                         if dev.handles_port(port) {
@@ -84,7 +116,6 @@ impl VirtualMachine {
                     }
 
                     if !handled {
-                        // Salida hacia el host
                         return Ok(VcpuExit::IoOut { port, data, size });
                     }
                 }

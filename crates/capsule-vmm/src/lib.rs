@@ -8,6 +8,7 @@ pub mod state;
 pub mod traits;
 pub mod vm;
 
+pub use capsule_boot::LinuxBootInfo;
 pub use config::VmConfig;
 pub use device::{DebugConsoleDevice, VirtualDevice};
 pub use state::{VcpuExit, VmStatus};

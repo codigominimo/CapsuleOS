@@ -3,6 +3,15 @@
 version = 4
 
 [[package]]
+name = "capsule-boot"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
+ "capsule-cpu",
+ "capsule-memory",
+]
+
+[[package]]
 name = "capsule-core"
 version = "0.1.0"
 dependencies = [
@@ -21,6 +30,7 @@ dependencies = [
 name = "capsule-gui"
 version = "0.1.0"
 dependencies = [
+ "capsule-boot",
  "capsule-core",
  "capsule-cpu",
  "capsule-memory",
@@ -40,6 +50,7 @@ dependencies = [
 name = "capsule-vmm"
 version = "0.1.0"
 dependencies = [
+ "capsule-boot",
  "capsule-core",
  "capsule-cpu",
  "capsule-memory",

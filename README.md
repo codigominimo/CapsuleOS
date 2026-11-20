@@ -87,8 +87,17 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Carga de código máquina x86-64 en GPA.
   - Ejecución de vCPU paso a paso y detección de salidas VM (`HLT`, `I/O Port Out`).
   - Comando CLI interactivo: `capsule.exe test-guest`.
-* [ ] **Hito M2 — Expansión de CPU Emulada (x86_64)** *(Próximo)*
-* [ ] **Hito M3 — Arranque Directo del Kernel Linux (bzImage direct boot)**
+* [x] **Hito M2 — Expansión de CPU Emulada (x86_64)**:
+  - Decodificación completa de instrucciones: aritmética, lógica, ModR/M, SIB.
+  - Prefijos REX para operaciones en modo de 64 bits completo y registros `R8`-`R15`.
+  - Banderas `RFLAGS` (`ZF`, `CF`, `SF`, `OF`, `PF`), saltos condicionales `Jcc` y pila (`CALL`/`RET`).
+* [x] **Hito M3 — Arranque Directo del Kernel Linux (bzImage direct boot)**:
+  - Parser del encabezado `SetupHeader` con firma `HdrS`.
+  - Construcción de la *Zero-Page* (`boot_params`) y mapa de memoria física E820.
+  - Creación de tablas de páginas de 4 niveles (PML4) con *identity mapping* de 1 GB en páginas de 2MB.
+  - Carga de línea de comandos del kernel e initramfs.
+  - Comando CLI de validación: `capsule.exe test-boot`.
+* [ ] **Hito M4 — Consola Serial UART 16550 y Linux Shell** *(Próximo)*
 
 ---
 
