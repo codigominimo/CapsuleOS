@@ -227,5 +227,122 @@ fn test_vm_ide_pio_identify_and_read() {
     vm.memory
         .read_bytes(GuestAddress::new(0x1000), &mut buf)
         .expect("read buffer");
-    assert_eq!(buf, sector0, "El sector leído por ATA PIO debe coincidir con el disco");
+    assert_eq!(
+        buf, sector0,
+        "El sector leído por ATA PIO debe coincidir con el disco"
+    );
+}
+
+#[test]
+fn test_vm_ide_pio_write_flush_persistence() {
+    use capsule_storage::{BlockDevice, RawDiskImage, DEFAULT_SECTOR_SIZE};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("capsuleos_vm_ide_{nanos}.img"));
+
+    let sector1_seed = {
+        let mut v = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+        for (i, b) in v.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(5).wrapping_add(0x33);
+        }
+        v
+    };
+    let sector2_pattern = {
+        let mut v = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+        for (i, b) in v.iter_mut().enumerate() {
+            *b = 0xC3u8 ^ (i as u8).wrapping_mul(3);
+        }
+        v
+    };
+
+    {
+        let mut disk = RawDiskImage::create(&path, 16, DEFAULT_SECTOR_SIZE).expect("create raw");
+        disk.write_sectors(1, 1, &sector1_seed).expect("seed lba1");
+        disk.flush().expect("flush seed");
+    }
+
+    {
+        let config = VmConfig {
+            name: "IdePioWriteVM".to_string(),
+            vcpu_count: 1,
+            memory_size: ByteSize::from_mib(2),
+        };
+        let mut vm = VirtualMachine::new(config).expect("create vm");
+        let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");
+        vm.attach_primary_master_disk(Box::new(disk))
+            .expect("attach disk");
+
+        // Patrón que el guest escribirá en LBA 2
+        vm.memory
+            .write_bytes(GuestAddress::new(0x2000), &sector2_pattern)
+            .expect("write pattern to guest mem");
+
+        // Guest: READ LBA1 -> 0x1000, WRITE LBA2 <- 0x2000, FLUSH, HLT
+        let mut code: Vec<u8> = Vec::new();
+        // Select master, LBA
+        code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+        // READ SECTORS: count=1, lba=1, cmd=0x20
+        code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]); // count
+        code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]); // lba low
+        code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]); // lba mid
+        code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]); // lba high
+        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]); // cmd
+        // Read loop: 128 dwords from 0x1F0 -> 0x1000
+        code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=0x1F0
+        code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=0x1000
+        code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
+        let read_loop = code.len();
+        code.extend_from_slice(&[0xED]); // in eax, dx
+        code.extend_from_slice(&[0x89, 0x03]); // mov [ebx], eax
+        code.extend_from_slice(&[0x83, 0xC3, 0x04]); // add ebx, 4
+        code.extend_from_slice(&[0xFF, 0xC9]); // dec ecx
+        let rel = (read_loop as i32) - ((code.len() as i32) + 2);
+        code.extend_from_slice(&[0x75, rel as i8 as u8]); // jnz read_loop
+
+        // WRITE SECTORS: count=1, lba=2, cmd=0x30
+        code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]); // drive
+        code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]); // count
+        code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x02, 0xEE]); // lba low 2
+        code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]); // lba mid
+        code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]); // lba high
+        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x30, 0xEE]); // cmd
+        // Write loop: 128 dwords from 0x2000 -> 0x1F0
+        code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=0x1F0
+        code.extend_from_slice(&[0xBB, 0x00, 0x20, 0x00, 0x00]); // ebx=0x2000
+        code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
+        let write_loop = code.len();
+        code.extend_from_slice(&[0x8B, 0x03]); // mov eax, [ebx]
+        code.extend_from_slice(&[0xEF]); // out dx, eax
+        code.extend_from_slice(&[0x83, 0xC3, 0x04]); // add ebx, 4
+        code.extend_from_slice(&[0xFF, 0xC9]); // dec ecx
+        let rel = (write_loop as i32) - ((code.len() as i32) + 2);
+        code.extend_from_slice(&[0x75, rel as i8 as u8]); // jnz write_loop
+
+        // FLUSH CACHE
+        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0xE7, 0xEE]);
+        code.push(0xF4); // hlt
+        vm.load_code(GuestAddress::new(0), &code).expect("load code");
+        vm.set_rip(0);
+        let exit = vm.run().expect("run guest");
+        assert_eq!(exit, VcpuExit::Halt);
+
+        let mut read_buf = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+        vm.memory
+            .read_bytes(GuestAddress::new(0x1000), &mut read_buf)
+            .expect("read guest buffer");
+        assert_eq!(read_buf, sector1_seed, "Guest debe leer LBA1 correctamente");
+    }
+
+    {
+        let mut disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("reopen raw");
+        let mut lba2 = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
+        disk.read_sectors(2, 1, &mut lba2).expect("read lba2");
+        assert_eq!(lba2, sector2_pattern, "LBA2 debe persistir tras WRITE+FLUSH y cierre");
+    }
+
+    let _ = std::fs::remove_file(&path);
 }
