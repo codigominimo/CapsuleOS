@@ -1,4 +1,4 @@
-﻿# Hoja de Ruta (Roadmap) de CapsuleOS
+# Hoja de Ruta (Roadmap) de CapsuleOS
 
 Este documento detalla el plan de desarrollo paso a paso para el proyecto CapsuleOS. El desarrollo se realiza de forma estrictamente incremental (hito a hito), donde cada hito debe ser validado y probado antes de avanzar al siguiente.
 
@@ -18,12 +18,12 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M7** | **Virtual Platform Devices** | PIC 8259 (dual, maestro/esclavo), PIT 8254, RTC/CMOS MC146818 y bus PCI extensible (config 0xCF8/0xCFC) integrados en la VM; IRQ0 (PIT) e IRQ14 (IDE primario, nivel) cableadas al PIC; validación con `test-platform` y pruebas unitarias | **Completado** |
 | **M8** | **Networking (User-mode NAT)**| Virtio-net transitional PCI legacy (I/O BAR0, split virtqueues RX/TX) con NAT en modo usuario (ARP, DHCP básico, ICMP, UDP por sondeo) e IRQ INTx PCI agregada en PIC IRQ11; validación con `test-network` y pruebas | **Completado** |
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE (puertos DISPI) con LFB en RAM guest, renderizado en tiempo real en ventana Win32 (DIB/StretchDIBits) y validación `test-framebuffer` | **Completado** |
-| **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratÃ³n, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyecciÃ³n de eventos Win32 desde GUI y validaciÃ³n `test-input` | **Completado** |
-| **M11**| **WHPX Hardware Virtualization**| Backend de aceleracion por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
+| **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratón, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyección de eventos Win32 desde GUI y validación `test-input` | **Completado** |
+| **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
 | **M12**| **Firmware BIOS & UEFI** | Integración de SeaBIOS y OVMF para arranque estándar desde disco/ISO | Pendiente |
 | **M13**| **Ubuntu Minimal / Server** | Arranque verificado de distribución Ubuntu Server mediante WHPX | Pendiente |
 | **M14**| **Ubuntu Desktop (GUI)** | Arranque verificado de entorno gráfico X11/Wayland de Ubuntu en ventana | Pendiente |
-| **M15**| **Capsule Bundle Format** | Especificación del contenedor monolitico: Header, Manifest, Payload comprimido | Pendiente |
+| **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
 | **M16**| **Capsule Builder CLI** | Herramienta `capsule build <image>` que genera ejecutables `.exe` | Pendiente |
 | **M17**| **Single-EXE Self-Contained** | Empaquetado final de `ubuntu.exe` sin dependencias de archivos auxiliares | Pendiente |
 | **M18**| **Windows Guest (WinPE / Win10)**| Soporte para invitados Windows (UEFI, GPT, ACPI, controladores virtuales) | Pendiente |
@@ -61,19 +61,17 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - Limitaciones: sin MMIO real para LFB/BAR, sin inyección de IRQ/VBlank en CPU (IDT/CLI/STI/IRET), render por sondeo, compatibilidad VBE/parcial orientada a validación inicial.
 
 ### Hito M10 (completado)
-- `capsule-devices::I8042Ps2Controller` implementa puertos `0x60` (datos) y `0x64` (estado/comando) con cola de salida, comandos bÃ¡sicos de controlador (0x20/0x60/0xA7â€“0xAE/0xAA/0xAB/0xA9/0xD4), y emulaciÃ³n de teclado PS/2 (scancodes Set 1, ACK/reset/identificaciÃ³n bÃ¡sicos) y ratÃ³n PS/2 (modo stream, enable reporting, paquetes de 3 bytes con movimiento/botones y eje Y invertido respecto a pantalla).
-- `capsule-vmm` registra el controlador i8042 por defecto, refleja IRQ1 (teclado) e IRQ12 (ratÃ³n) al PIC 8259 en `tick_platform` segÃºn datos pendientes/command byte, refresca estado tras I/O a 0x60/0x64 y expone APIs `inject_ps2_scancodes`, `inject_ps2_mouse_event`, `inject_ps2_mouse_button_packet`.
-- `capsule-gui` captura eventos Win32 (`WM_KEYDOWN/UP`, `WM_SYSKEY*`, `WM_MOUSEMOVE`, `WM_L/R/MBUTTON*`, foco) y los traduce a scancodes Set 1/paquetes PS/2 hacia la VM; soporta captura de ratÃ³n en ventana (clic para capturar, Ctrl+Esc para liberar).
-- ValidaciÃ³n: `capsule.exe test-input` (lectura guest de scancode por 0x64/0x60, secuencia D4/F4 + ACK + paquete de ratÃ³n, y reflexiÃ³n de IRQ1/IRQ12 a vectores PIC 0x21/0x2C por sondeo), `cargo test --workspace` y regresiones CLI previas.
-- Limitaciones: sin inyecciÃ³n de interrupciones en CPU (IDT/CLI/STI/IRET/APIC), sin rueda/5Âº botÃ³n extendidos, mapeo de teclado parcial (Set 1, sin layout completo/IME), captura de ratÃ³n bÃ¡sica y sin dispositivos USB/HID.
+- `capsule-devices::I8042Ps2Controller` implementa puertos `0x60` (datos) y `0x64` (estado/comando) con cola de salida, comandos básicos de controlador (0x20/0x60/0xA7-0xAE/0xAA/0xAB/0xA9/0xD4), y emulación de teclado PS/2 (scancodes Set 1, ACK/reset/identificación básicos) y ratón PS/2 (modo stream, enable reporting, paquetes de 3 bytes con movimiento/botones y eje Y invertido respecto a pantalla).
+- `capsule-vmm` registra el controlador i8042 por defecto, refleja IRQ1 (teclado) e IRQ12 (ratón) al PIC 8259 en `tick_platform` según datos pendientes/command byte, refresca estado tras I/O a 0x60/0x64 y expone APIs `inject_ps2_scancodes`, `inject_ps2_mouse_event`, `inject_ps2_mouse_button_packet`.
+- `capsule-gui` captura eventos Win32 (`WM_KEYDOWN/UP`, `WM_SYSKEY*`, `WM_MOUSEMOVE`, `WM_L/R/MBUTTON*`, foco) y los traduce a scancodes Set 1/paquetes PS/2 hacia la VM; soporta captura de ratón en ventana (clic para capturar, Ctrl+Esc para liberar).
+- Validación: `capsule.exe test-input` (lectura guest de scancode por 0x64/0x60, secuencia D4/F4 + ACK + paquete de ratón, y reflexión de IRQ1/IRQ12 a vectores PIC 0x21/0x2C por sondeo), `cargo test --workspace` y regresiones CLI previas.
+- Limitaciones: sin inyección de interrupciones en CPU (IDT/CLI/STI/IRET/APIC), sin rueda/5º botón extendidos, mapeo de teclado parcial (Set 1, sin layout completo/IME), captura de ratón básica y sin dispositivos USB/HID.
 
 ### Hito M11 (completado)
-- Crate `capsule-whpx` con carga dinamica de `WinHvPlatform.dll` (cuando esta disponible) y wrapper minimo de WHPX: creacion de particion, configuracion basica (1 vCPU), mapeo de `GuestMemory` como GPA (RWX) y ciclo de ejecucion de vCPU (`WHvRunVirtualProcessor`).
-- Sincronizacion de registros generales/RIP/RFLAGS y estado inicial minimo de vCPU para ejecucion de guests simples; decodificacion de VM-exits relevantes para el modelo actual, principalmente E/S por puerto x86 (`IN/OUT`) con avance de RIP por longitud de instruccion.
-- `capsule-vmm` incorpora seleccion de backend de ejecucion (`VmBackendKind::{Software,Whpx}`), API de acceso a registros unificada (`get/set_regs`, `rip`, `eax`, etc.), `new_whpx()` para forzar WHPX y `new()` con fallback a software si WHPX no esta disponible.
-- Las VM-exits WHPX de E/S se despachan a los dispositivos emulados existentes (`VirtualDevice`/PIO) y el tick/sondeo de plataforma (`tick_platform`) se preserva, manteniendo compatibilidad con PIC/PIT/RTC/PS2/PCI/IDE/virtio-net/VBE en el modelo actual. MMIO y entrega arquitectural de IRQ no estan soportados en M11.
-- `capsule-gui` intenta backend WHPX por defecto para la sesion GUI/demo (con fallback a software y motivo reportado en UI) y agrega validacion CLI `capsule.exe test-whpx`: en hosts con WHPX ejecuta guest minimo (HLT + OUT a COM1), en hosts sin WHPX reporta SKIP sin fallar.
-- Validacion: `cargo test --workspace`, regresion CLI (`test-guest`, `test-boot`, `test-serial`, `test-storage`, `test-disk`, `test-cow`, `test-platform`, `test-network`, `test-framebuffer`, `test-input`, `test-boot-disk`) y `test-whpx` (ejecucion WHPX o SKIP segun host).
-- Limitaciones: sin MMIO dispatch, sin inyeccion/entrega arquitectural de interrupciones en CPU (IDT/CLI/STI/IRET/APIC), sin long mode/boot de kernel/firmware real en WHPX (contexto inicial minimo), decodificacion de VM-exit basada en offsets/heuristicas para IO (con fallback por bytes de instruccion) y dependencia de la caracteristica "Windows Hypervisor Platform" habilitada.
-
-
+- Crate `capsule-whpx` con carga dinámica de `WinHvPlatform.dll` (cuando está disponible) y wrapper mínimo de WHPX: creación de partición, configuración básica (1 vCPU), mapeo de `GuestMemory` como GPA (RWX) y ciclo de ejecución de vCPU (`WHvRunVirtualProcessor`).
+- Sincronización de registros generales/RIP/RFLAGS y estado inicial mínimo de vCPU para ejecución de guests simples; decodificación de VM-exits relevantes para el modelo actual, principalmente E/S por puerto x86 (`IN/OUT`) con avance de RIP por longitud de instrucción.
+- `capsule-vmm` incorpora selección de backend de ejecución (`VmBackendKind::{Software,Whpx}`), API de acceso a registros unificada (`get/set_regs`, `rip`, `eax`, etc.), `new_whpx()` para forzar WHPX y `new()` con fallback a software si WHPX no está disponible.
+- Las VM-exits WHPX de E/S se despachan a los dispositivos emulados existentes (`VirtualDevice`/PIO) y el tick/sondeo de plataforma (`tick_platform`) se preserva, manteniendo compatibilidad con PIC/PIT/RTC/PS2/PCI/IDE/virtio-net/VBE en el modelo actual. MMIO y entrega arquitectural de IRQ no están soportados en M11.
+- `capsule-gui` intenta backend WHPX por defecto para la sesión GUI/demo (con fallback a software y motivo reportado en UI) y agrega validación CLI `capsule.exe test-whpx`: en hosts con WHPX ejecuta guest mínimo (HLT + OUT a COM1), en hosts sin WHPX o con inicialización no utilizable reporta SKIP sin fallar.
+- Validación: `cargo test --workspace`, regresión CLI (`test-guest`, `test-boot`, `test-serial`, `test-storage`, `test-disk`, `test-cow`, `test-platform`, `test-network`, `test-framebuffer`, `test-input`, `test-boot-disk`) y `test-whpx` (ejecución WHPX o SKIP según host).
+- Limitaciones: sin MMIO dispatch, sin inyección/entrega arquitectural de interrupciones en CPU (IDT/CLI/STI/IRET/APIC), sin long mode/boot de kernel/firmware real en WHPX (contexto inicial mínimo), decodificación de VM-exit basada en offsets/heurísticas para IO (con fallback por bytes de instrucción) y dependencia de la característica "Windows Hypervisor Platform" habilitada.

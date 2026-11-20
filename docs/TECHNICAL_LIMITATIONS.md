@@ -1,4 +1,4 @@
-﻿# Limitaciones Técnicas y Retos de Diseño
+# Limitaciones Técnicas y Retos de Diseño
 
 Este documento expone las restricciones físicas, lógicas y arquitectónicas inherentes al diseño de un VMM autocontenido dentro de ejecutables portables de Windows.
 
@@ -29,13 +29,21 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 ## 2. Virtualización de Hardware vs. Emulación por Software
 
 ### 2.1. Requisitos y Permisos de WHPX (M11: backend inicial)
-* **Requisito**: Windows Hypervisor Platform requiere que el procesador cuente con soporte de virtualizacion por hardware (Intel VT-x o AMD-V) habilitado en el firmware UEFI/BIOS del equipo host.
-* **Funcion de Windows**: La caracteristica opcional `HypervisorPlatform` (Windows Hypervisor Platform) debe estar activa. `capsule-core::detect_whpx()` y `capsule-whpx` cargan `WinHvPlatform.dll` dinamicamente; si WHPX no esta disponible, `capsule.exe test-whpx` reporta SKIP y `VirtualMachine::new()` puede hacer fallback al backend software.
-* **Estado M11**: `capsule-whpx` crea particion/vCPU, mapea la GPA del guest sobre `GuestMemory` del host y atiende VM-exits basicos de E/S por puerto para integrarse con los dispositivos PIO existentes. No se usa MMIO ni `WHvEmulator`/APIC virtual completo en esta etapa.
+* **Requisito**: Windows Hypervisor Platform requiere que el procesador cuente con soporte de virtualización por hardware (Intel VT-x o AMD-V) habilitado en el firmware UEFI/BIOS del equipo host.
+* **Función de Windows**: La característica opcional `HypervisorPlatform` (Windows Hypervisor Platform) debe estar activa. `capsule-core::detect_whpx()` y `capsule-whpx` cargan `WinHvPlatform.dll` dinámicamente; si WHPX no está disponible, `capsule.exe test-whpx` reporta SKIP y `VirtualMachine::new()` puede hacer fallback al backend software.
+* **Estado M11**: `capsule-whpx` crea partición/vCPU, mapea la GPA del guest sobre `GuestMemory` del host y atiende VM-exits básicos de E/S por puerto para integrarse con los dispositivos PIO existentes. No se usa MMIO ni `WHvEmulator`/APIC virtual completo en esta etapa.
 * **Fallback a Emulador**: El backend software (`capsule-cpu`/`capsule-vmm`) permanece disponible como ruta por defecto/fallback cuando WHPX no puede inicializarse o no es adecuado para el flujo actual.
+
 ### 2.2. Rendimiento de la Emulación por Software
 * **Limitación**: El backend de CPU software actual no implementa entrega de interrupciones arquitecturales (IDT/CLI/STI/IRET/APIC). Aunque el PIC/PIT/RTC/PCI/IDE/PS/2 reflejan IRQs y condiciones pendientes (p. ej. PIT IRQ0, teclado IRQ1, INTx PCI/IRQ11, ratón IRQ12, IDE IRQ14), la VM procesa dispositivos por sondeo (polling) en cada tick/iteración y refresca líneas de IRQ hacia el PIC.
 * **Impacto**: Guests que dependan estrictamente de interrupciones temporizadas o de notificación asíncrona por IRQ pueden no funcionar correctamente hasta que se implemente inyección/entrega de interrupciones en la vCPU. Esto también aplica a señales de video (p. ej. VBlank) no disponibles y a entrada dependiente de IRQs reales (p. ej. drivers que no sondeen puertos PS/2/PIC).
+
+### 2.3. Limitaciones del backend WHPX en M11
+* **MMIO no soportado**: el modelo actual de dispositivos es PIO (puertos) y memoria guest lineal; VM-exits de acceso a memoria/MMIO no se despachan a dispositivos MMIO.
+* **Sin inyección arquitectural de interrupciones**: no hay entrega de IRQ/excepciones vía IDT/CLI/STI/IRET/APIC/IOAPIC en WHPX (ni en software). Los dispositivos siguen dependiendo de sondeo/ticks y de las líneas reflejadas al PIC según el modelo existente.
+* **Estado inicial de vCPU mínimo**: configuración básica orientada a pruebas planas (HLT/IO); no se implementan long mode, tablas de sistema completas, MSRs avanzados ni ruta de firmware/boot de kernels reales sobre WHPX en M11.
+* **Decodificación de VM-exit IO**: la obtención de longitud de instrucción y contexto de salida usa offsets/heurísticas según layout disponible y un fallback de decodificación mínima desde memoria guest para avanzar RIP en instrucciones `IN/OUT` comunes.
+* **Paridad parcial con software**: el backend WHPX reutiliza dispositivos/timing por tick del VMM, por lo que la fidelidad temporal y la semántica de ejecución pueden diferir del objetivo para guests complejos.
 
 ---
 
@@ -56,9 +64,3 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Estado M10**: Se implementa `I8042Ps2Controller` (0x60/0x64) con cola de salida, comandos básicos de controlador/dispositivos, teclado PS/2 (scancodes Set 1) y ratón PS/2 (modo stream, paquetes de 3 bytes). La GUI Win32 traduce eventos de teclado/ratón a inyecciones PS/2 en la VM; IRQ1/IRQ12 se reflejan al PIC por sondeo.
 * **Limitaciones actuales**: sin inyección de IRQ en CPU (IDT/CLI/STI/IRET/APIC), por lo que drivers guest dependientes de interrupciones reales pueden no funcionar; mapeo de teclado parcial (sin layouts/IME completos, sin todas las teclas extendidas), sin rueda ni botones extendidos, captura de ratón básica y sin dispositivos USB/HID/touch.
 * **Impacto**: Adecuado para validación y guests/bootloaders que sondeen puertos PS/2; compatibilidad limitada con sistemas que requieran mayor fidelidad de input o IRQs hardware entregadas por CPU.
-### 2.3. Limitaciones del backend WHPX en M11
-* **MMIO no soportado**: el modelo actual de dispositivos es PIO (puertos) y memoria guest lineal; VM-exits de acceso a memoria/MMIO no se despachan a dispositivos MMIO.
-* **Sin inyeccion arquitectural de interrupciones**: no hay entrega de IRQ/excepciones via IDT/CLI/STI/IRET/APIC/IOAPIC en WHPX (ni en software). Los dispositivos siguen dependiendo de sondeo/ticks y de las lineas reflejadas al PIC segun el modelo existente.
-* **Estado inicial de vCPU minimo**: configuracion basica orientada a pruebas planas (HLT/IO); no se implementan long mode, tablas de sistema completas, MSRs avanzados ni ruta de firmware/boot de kernels reales sobre WHPX en M11.
-* **Decodificacion de VM-exit IO**: la obtencion de longitud de instruccion y contexto de salida usa offsets/heuristicas segun layout disponible y un fallback de decodificacion minima desde memoria guest para avanzar RIP en instrucciones `IN/OUT` comunes.
-* **Paridad parcial con software**: el backend WHPX reutiliza dispositivos/timing por tick del VMM, por lo que la fidelidad temporal y la semantica de ejecucion pueden diferir del hipervisor objetivo para guests complejos.

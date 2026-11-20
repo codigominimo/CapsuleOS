@@ -1,4 +1,4 @@
-﻿# Arquitectura de CapsuleOS
+# Arquitectura de CapsuleOS
 
 CapsuleOS es una plataforma de ejecución y empaquetado para Windows que permite empaquetar sistemas operativos completos dentro de ejecutables portables `.exe`. El usuario final simplemente ejecuta el binario (ej. `Ubuntu.exe`, `Windows.exe`) y obtiene una máquina virtual en ejecución sin necesidad de preinstalar hipervisores externos (VirtualBox, VMware, QEMU).
 
@@ -63,26 +63,27 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Manejo de errores y logging estructurado.
 
 * **`capsule-vmm`**:
-  * Orquestacion de la maquina virtual.
-  * Seleccion de backend de ejecucion en M11 (`VmBackendKind::{Software,Whpx}`) con API de acceso a registros unificada en `VirtualMachine`; `new()` intenta WHPX solo si se solicita y hace fallback a software, `new_whpx()` fuerza WHPX.
-  * Traits de abstraccion (`VmBackend`/`VirtualCpu`) definidos para evolucion futura; la integracion M11 usa un backend interno concreto (`Software`/`Whpx`) para preservar el comportamiento/API existentes.
-  * Despacho de salidas de la VM (VM Exits/software exits: Port I/O, HLT, errores). En software y en WHPX (IO exits) se reutiliza el mismo despacho de dispositivos PIO y tick/sondeo de plataforma/PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, PS/2 IRQ1/IRQ12, virtqueues/NAT), ademas de stepping incremental para UI, utilidades de lectura/copia de framebuffer VBE e inyeccion de eventos de entrada PS/2 desde la GUI.
-  * Nota: MMIO y entrega/inyeccion arquitectural de interrupciones a la CPU (IDT/CLI/STI/IRET/APIC) pendientes en ambos caminos.
+  * Orquestación de la máquina virtual.
+  * Selección de backend de ejecución en M11 (`VmBackendKind::{Software,Whpx}`) con API de acceso a registros unificada en `VirtualMachine`; `new()` intenta WHPX solo si se solicita y hace fallback a software, `new_whpx()` fuerza WHPX.
+  * Traits de abstracción (`VmBackend`/`VirtualCpu`) definidos para evolución futura; la integración M11 usa un backend interno concreto (`Software`/`Whpx`) para preservar el comportamiento/API existentes.
+  * Despacho de salidas de la VM (VM Exits/software exits: Port I/O, HLT, errores). En software y en WHPX (IO exits) se reutiliza el mismo despacho de dispositivos PIO y tick/sondeo de plataforma/PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, PS/2 IRQ1/IRQ12, virtqueues/NAT), además de stepping incremental para UI, utilidades de lectura/copia de framebuffer VBE e inyección de eventos de entrada PS/2 desde la GUI.
+  * Nota: MMIO y entrega/inyección arquitectural de interrupciones a la CPU (IDT/CLI/STI/IRET/APIC) pendientes en ambos caminos.
 
 * **`capsule-cpu`**:
   * Definición del estado de la CPU x86-64: registros de propósito general (RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP, R8-R15), puntero de instrucción (RIP), registro de banderas (RFLAGS), registros de control (CR0, CR2, CR3, CR4, CR8), registros de segmento (CS, DS, SS, ES, FS, GS), tablas descriptores (GDTR, IDTR, LDTR, TR) y MSRs esenciales.
 
-### 2.2. Backends de Ejecucion
-* **`capsule-whpx`** (implementado en M11, alcance minimo):
-  * Backend de virtualizacion acelerada por hardware nativa de Windows mediante carga dinamica de `WinHvPlatform.dll` (sin dependencia dura en hosts sin WHPX).
-  * Creacion de particion WHPX, creacion de vCPU, mapeo de la memoria fisica guest (`GuestMemory`) como GPA y ejecucion por `WHvRunVirtualProcessor`.
-  * Sincronizacion de registros generales/RIP/RFLAGS y manejo de VM-exits basicos, principalmente E/S por puerto (IN/OUT), traducidos al bus de dispositivos emulados del VMM.
-  * Pendiente: MMIO, emulacion/instrucciones adicionales segun exits, APIC/IOAPIC/interrupciones virtuales e inyeccion arquitectural, soporte de modos/estado de CPU completo para firmware/kernels reales.
+### 2.2. Backends de Ejecución
+* **`capsule-whpx`** (implementado en M11, alcance mínimo):
+  * Backend de virtualización acelerada por hardware nativa de Windows mediante carga dinámica de `WinHvPlatform.dll` (sin dependencia dura en hosts sin WHPX).
+  * Creación de partición WHPX, creación de vCPU, mapeo de la memoria física guest (`GuestMemory`) como GPA y ejecución por `WHvRunVirtualProcessor`.
+  * Sincronización de registros generales/RIP/RFLAGS y manejo de VM-exits básicos, principalmente E/S por puerto (IN/OUT), traducidos al bus de dispositivos emulados del VMM.
+  * Pendiente: MMIO, emulación/instrucciones adicionales según exits, APIC/IOAPIC/interrupciones virtuales e inyección arquitectural, soporte de modos/estado de CPU completo para firmware/kernels reales.
 
 * **`capsule-emulator` / backend software** (integrado actualmente en `capsule-cpu` + `capsule-vmm`):
-  * Ejecucion puramente por software para x86-64 usada como backend por defecto y como fallback cuando WHPX no esta disponible.
-  * Decodificador/interprete de instrucciones, registros y manejo de salidas de E/S/HLT sobre `GuestMemory`.
+  * Ejecución puramente por software para x86-64 usada como backend por defecto y como fallback cuando WHPX no está disponible.
+  * Decodificador/intérprete de instrucciones, registros y manejo de salidas de E/S/HLT sobre `GuestMemory`.
   * Limitado: sin entrega arquitectural de interrupciones (IDT/CLI/STI/IRET/APIC) y sin MMU/modos completos equivalentes a un guest moderno.
+
 ### 2.3. Memoria y Dispositivos
 * **`capsule-memory`**:
   * Asignación y gestión de memoria física del guest (`GuestMemory`).
@@ -98,7 +99,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
     * Controlador PS/2 i8042 (puertos `0x60/0x64`) con teclado (scancodes Set 1) y ratón (paquetes PS/2 de 3 bytes), con IRQ1/IRQ12 reflejadas al PIC por sondeo según datos pendientes.
     * Bus PCI extensible (mecanismo #1, `0xCF8/0xCFC`) con enrutamiento de config/E/S, registro de funciones PCI y sondeo de dispositivos con acceso a memoria guest.
     * NIC `VirtioNetPci` transitional (legacy PCI I/O BAR0, split virtqueues RX/TX) integrada al bus PCI; sin MMIO.
-    * Adaptador grafico `BochsVbe` (puertos DISPI `0x01CE/0x01CF`) con LFB en RAM guest (`0x0040_0000`) para render host por sondeo.
+    * Adaptador gráfico `BochsVbe` (puertos DISPI `0x01CE/0x01CF`) con LFB en RAM guest (`0x0040_0000`) para render host por sondeo.
   * Pendiente: MMIO, inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET/APIC), APIC local/IO-APIC y mayor fidelidad temporal.
 
 * **`capsule-storage`**:
@@ -114,6 +115,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
     * Bochs VBE DISPI (M9, validación inicial 32bpp/LFB en RAM guest).
     * `virtio-gpu` (futuro).
   * Sincronización de refresco con la ventana mediante timer GUI y blit Win32 (`StretchDIBits`).
+
 * **`capsule-input`** (integrado actualmente en `capsule-devices::I8042Ps2Controller` + `capsule-gui`, M10; crate dedicado pendiente):
   * Controlador PS/2 i8042 (0x60/0x64) con teclado (Set 1) y ratón (paquetes de 3 bytes) e IRQ1/IRQ12 reflejadas al PIC por sondeo.
   * Conversión de eventos Win32 (`WM_KEYDOWN/UP`, `WM_SYSKEY*`, `WM_MOUSEMOVE`, `WM_*BUTTON*`) a scancodes/paquetes PS/2 inyectados en la VM. Pendiente: mapeo de teclado más completo, rueda/botones extendidos y USB/HID.
@@ -141,7 +143,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Mantiene la imagen base intacta y almacena las modificaciones en un archivo diferencial/overlay (integrable al bundle/cápsula en hitos posteriores).
 
 * **`capsule-bundle`**:
-  * Especificación y parser del contenedor monolitico Capsule:
+  * Especificación y parser del contenedor monolítico Capsule:
     * `Header`: Identificador mágico `CAPSULE\0`, versión, offsets.
     * `Manifest`: Configuración de vCPU, RAM, firmware, discos y red.
     * `Payload`: Firmware, kernel, ramdisk o imagen de disco comprimida (zstd/lz4).
@@ -157,4 +159,3 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-builder`**:
   * Herramienta de compilación para usuarios que desean generar sus propios ejecutables `.exe` a partir de ISOs o VHDs.
-
