@@ -150,6 +150,24 @@ impl IdeController {
         };
     }
 
+    fn refresh_selected_drive_status(&mut self) {
+        // Si hay una transferencia PIO en curso (DRQ), no alterar el estado.
+        if (self.status & SR_DRQ) != 0 {
+            return;
+        }
+        self.data_buf.clear();
+        self.data_index = 0;
+        self.pio_write = false;
+        self.sectors_remaining = 0;
+        self.error = 0;
+        self.irq_pending = false;
+        self.status = if self.selected_drive_present() {
+            SR_DRDY | SR_DSC
+        } else {
+            0
+        };
+    }
+
     fn selected_is_slave(&self) -> bool {
         (self.drive_head & 0x10) != 0
     }
@@ -193,6 +211,24 @@ impl IdeController {
         self.pio_write = false;
         self.sectors_remaining = 0;
         self.irq_pending = true;
+    }
+
+    fn validate_lba28_request(&mut self, lba: u64, count: u16) -> bool {
+        // Requiere modo LBA para comandos de acceso por sectores en esta implementación.
+        if (self.drive_head & 0x40) == 0 {
+            self.set_error_abort();
+            return false;
+        }
+        let Some(drive) = self.selected_drive_mut() else {
+            self.set_error_abort();
+            return false;
+        };
+        let end = lba.saturating_add(count as u64);
+        if lba > 0x0FFF_FFFF || end > 0x1000_0000 || end > drive.disk.sector_count() {
+            self.set_error_abort();
+            return false;
+        }
+        true
     }
 
     fn prepare_read(&mut self, lba: u64, count: u16) {
@@ -339,6 +375,9 @@ impl IdeController {
                 }
                 let lba = self.lba28();
                 let count = self.sector_count_effective();
+                if !self.validate_lba28_request(lba, count) {
+                    return;
+                }
                 self.prepare_read(lba, count);
             }
             CMD_WRITE_SECTORS => {
@@ -348,6 +387,9 @@ impl IdeController {
                 }
                 let lba = self.lba28();
                 let count = self.sector_count_effective();
+                if !self.validate_lba28_request(lba, count) {
+                    return;
+                }
                 self.prepare_write(lba, count);
             }
             CMD_FLUSH_CACHE => {
@@ -415,7 +457,10 @@ impl IdeController {
             REG_LBA_LOW => self.lba_low = (val & 0xFF) as u8,
             REG_LBA_MID => self.lba_mid = (val & 0xFF) as u8,
             REG_LBA_HIGH => self.lba_high = (val & 0xFF) as u8,
-            REG_DRIVE_HEAD => self.drive_head = (val & 0xFF) as u8,
+            REG_DRIVE_HEAD => {
+                self.drive_head = (val & 0xFF) as u8;
+                self.refresh_selected_drive_status();
+            }
             REG_COMMAND => self.execute_command((val & 0xFF) as u8),
             _ => {}
         }

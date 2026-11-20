@@ -423,3 +423,133 @@ fn test_vm_boot_from_disk_sector_reads_next_sector_via_ide() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn test_vm_ide_pio_multisector_read_write_via_guest() {
+    use capsule_storage::{BlockDevice, MemoryDisk, RawDiskImage, DEFAULT_SECTOR_SIZE};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("capsuleos_vm_ide_multi_{nanos}.img"));
+
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+    let mut s1 = vec![0u8; sector_size];
+    let mut s2 = vec![0u8; sector_size];
+    let mut w1 = vec![0u8; sector_size];
+    let mut w2 = vec![0u8; sector_size];
+    for i in 0..sector_size {
+        s1[i] = (i as u8).wrapping_mul(3).wrapping_add(0x21);
+        s2[i] = (i as u8).wrapping_mul(7).wrapping_add(0x41);
+        w1[i] = 0xA0 ^ (i as u8);
+        w2[i] = 0x5B ^ (i as u8).wrapping_mul(2);
+    }
+
+    {
+        let mut disk = RawDiskImage::create(&path, 16, DEFAULT_SECTOR_SIZE).expect("create raw");
+        disk.write_sectors(1, 1, &s1).expect("seed lba1");
+        disk.write_sectors(2, 1, &s2).expect("seed lba2");
+        disk.flush().expect("flush seed");
+    }
+
+    {
+        let config = VmConfig {
+            name: "IdeMultiSectorVM".to_string(),
+            vcpu_count: 1,
+            memory_size: ByteSize::from_mib(2),
+        };
+        let mut vm = VirtualMachine::new(config).expect("create vm");
+        let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");
+        vm.attach_primary_master_disk(Box::new(disk))
+            .expect("attach disk");
+
+        let mut payload = Vec::with_capacity(sector_size * 2);
+        payload.extend_from_slice(&w1);
+        payload.extend_from_slice(&w2);
+        vm.load_code(GuestAddress::new(0x2000), &payload)
+            .expect("load write payload");
+
+        // Guest: READ 2 sectors LBA1->0x1000, WRITE 2 sectors LBA3<-0x2000, save statuses, FLUSH, HLT
+        let mut code: Vec<u8> = Vec::new();
+        // Select master, LBA
+        code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+        // READ 2 sectors @ LBA1
+        code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x02, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
+        code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=dst
+        code.extend_from_slice(&[0xB9, 0x00, 0x01, 0x00, 0x00]); // ecx=256 dwords
+        let read_loop = code.len();
+        code.extend_from_slice(&[0xED, 0x89, 0x03, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
+        let rel = (read_loop as i32) - ((code.len() as i32) + 2);
+        code.extend_from_slice(&[0x75, rel as i8 as u8]);
+        // status after read -> 0x0500
+        code.extend_from_slice(&[
+            0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x00, 0x05, 0x00, 0x00, 0x88, 0x03,
+        ]);
+
+        // WRITE 2 sectors @ LBA3
+        code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x02, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x03, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x30, 0xEE]);
+        code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
+        code.extend_from_slice(&[0xBB, 0x00, 0x20, 0x00, 0x00]); // ebx=src
+        code.extend_from_slice(&[0xB9, 0x00, 0x01, 0x00, 0x00]); // ecx=256 dwords
+        let write_loop = code.len();
+        code.extend_from_slice(&[0x8B, 0x03, 0xEF, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
+        let rel = (write_loop as i32) - ((code.len() as i32) + 2);
+        code.extend_from_slice(&[0x75, rel as i8 as u8]);
+        // status after write -> 0x0501
+        code.extend_from_slice(&[
+            0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x01, 0x05, 0x00, 0x00, 0x88, 0x03,
+        ]);
+        // flush and status -> 0x0502
+        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0xE7, 0xEE]);
+        code.extend_from_slice(&[
+            0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x02, 0x05, 0x00, 0x00, 0x88, 0x03,
+        ]);
+        code.push(0xF4);
+
+        vm.load_code(GuestAddress::new(0), &code).expect("load guest code");
+        vm.set_rip(0);
+        let exit = vm.run().expect("run guest");
+        assert_eq!(exit, VcpuExit::Halt);
+
+        let mut read_back = vec![0u8; sector_size * 2];
+        vm.memory
+            .read_bytes(GuestAddress::new(0x1000), &mut read_back)
+            .expect("read guest buffer");
+        assert_eq!(&read_back[..sector_size], &s1[..], "LBA1 leido incorrecto");
+        assert_eq!(&read_back[sector_size..], &s2[..], "LBA2 leido incorrecto");
+
+        let st_r = vm.memory.read_u8(GuestAddress::new(0x0500)).expect("st read");
+        let st_w = vm.memory.read_u8(GuestAddress::new(0x0501)).expect("st write");
+        let st_f = vm.memory.read_u8(GuestAddress::new(0x0502)).expect("st flush");
+        assert_eq!(st_r & 0x01, 0, "READ multi-sector fallo (status=0x{st_r:02X})");
+        assert_eq!(st_w & 0x01, 0, "WRITE multi-sector fallo (status=0x{st_w:02X})");
+        assert_eq!(st_f & 0x01, 0, "FLUSH fallo (status=0x{st_f:02X})");
+    }
+
+    {
+        let mut disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("reopen raw");
+        let mut got = vec![0u8; sector_size * 2];
+        disk.read_sectors(3, 2, &mut got).expect("read lba3-4");
+        let mut expected = Vec::with_capacity(sector_size * 2);
+        expected.extend_from_slice(&w1);
+        expected.extend_from_slice(&w2);
+        assert_eq!(got, expected, "Los sectores multi-sector escritos por guest deben persistir");
+    }
+
+    let _ = std::fs::remove_file(&path);
+
+    // Sanity: MemoryDisk path not used above, but keep import meaningful for future variations.
+    let _ = MemoryDisk::new(1, DEFAULT_SECTOR_SIZE).expect("memdisk");
+}

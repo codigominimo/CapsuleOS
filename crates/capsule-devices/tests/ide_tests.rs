@@ -247,3 +247,77 @@ fn ide_nien_masks_irq_and_srst_resets_state() {
     let st = ide.read_io(0x1F7, 1);
     assert_eq!(st & 0x08, 0x08, "Tras SRST debe poder ejecutarse READ y activar DRQ");
 }
+
+#[test]
+fn ide_selecting_absent_slave_updates_status_and_errors_on_io() {
+    let disk = MemoryDisk::new(16, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // Select slave (no device attached)
+    ide.write_io(0x1F6, 0xF0, 1); // DEV=1, LBA=1
+    let status = ide.read_io(0x1F7, 1);
+    assert_eq!(status & 0x40, 0, "Sin slave, DRDY no debe estar activo");
+    assert_eq!(status & 0x01, 0, "Seleccionar unidad ausente no debe poner ERR por si sola");
+
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 0, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1); // READ
+    let st = ide.read_io(0x1F7, 1);
+    assert_ne!(st & 0x01, 0, "READ a unidad ausente debe señalizar ERR");
+    assert_eq!(st & 0x08, 0, "READ fallido no debe activar DRQ");
+
+    // Volver a master debe restaurar estado listo
+    ide.write_io(0x1F6, 0xE0, 1);
+    let st_master = ide.read_io(0x1F7, 1);
+    assert_eq!(st_master & (0x40 | 0x10), 0x40 | 0x10, "Master presente debe quedar DRDY/DSC");
+}
+
+#[test]
+fn ide_read_write_out_of_range_lba_sets_error() {
+    let disk = MemoryDisk::new(8, DEFAULT_SECTOR_SIZE).expect("disk"); // LBAs 0..7
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // READ fuera de rango (LBA 8)
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 8, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1);
+    let st = ide.read_io(0x1F7, 1);
+    assert_ne!(st & 0x01, 0, "READ fuera de rango debe señalizar ERR");
+    assert_eq!(st & 0x08, 0, "READ fuera de rango no debe activar DRQ");
+
+    // WRITE fuera de rango
+    ide.write_io(0x1F6, 0xE0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 8, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x30, 1);
+    let st = ide.read_io(0x1F7, 1);
+    assert_ne!(st & 0x01, 0, "WRITE fuera de rango debe señalizar ERR");
+    assert_eq!(st & 0x08, 0, "WRITE fuera de rango no debe activar DRQ");
+}
+
+#[test]
+fn ide_read_write_requires_lba_mode() {
+    let disk = MemoryDisk::new(16, DEFAULT_SECTOR_SIZE).expect("disk");
+    let mut ide = IdeController::new_primary();
+    ide.attach_master(Box::new(disk));
+
+    // CHS mode (bit 6 = 0), master
+    ide.write_io(0x1F6, 0xA0, 1);
+    ide.write_io(0x1F2, 1, 1);
+    ide.write_io(0x1F3, 0, 1);
+    ide.write_io(0x1F4, 0, 1);
+    ide.write_io(0x1F5, 0, 1);
+    ide.write_io(0x1F7, 0x20, 1); // READ
+    let st = ide.read_io(0x1F7, 1);
+    assert_ne!(st & 0x01, 0, "READ en modo CHS debe ser rechazado en esta implementación LBA28");
+    assert_eq!(st & 0x08, 0);
+}
