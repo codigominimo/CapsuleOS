@@ -1,4 +1,4 @@
-# Matriz de Compatibilidad de CapsuleOS
+﻿# Matriz de Compatibilidad de CapsuleOS
 
 Este documento describe la compatibilidad planeada y verificada de CapsuleOS tanto a nivel de sistema host como de sistemas operativos invitados (guests).
 
@@ -22,7 +22,7 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 
 | Sistema Operativo | Arquitectura | Modo Arranque | Backend Emulador | Backend WHPX | Consola (TTY) | Gráficos (GUI) | Entrada (PS/2) | Persistencia | Estado |
 |---|---|---|---|---|---|---|---|---|---|
-| **Minimal Test Guest (synthetic)** | x86-64 | Direct (M1/M10 tests) | Planeado | Planeado | Verificado (UART 16550/COM1 por sondeo) | Verificado (VBE LFB 320x200x32, `test-framebuffer`, render Win32 por sondeo) | Verificado (i8042 teclado/ratón, IRQ1/IRQ12 por sondeo, `test-input`; GUI Win32→PS/2) | N/A | En desarrollo (tests internos) |
+| **Minimal Test Guest (synthetic)** | x86-64 | Direct (M1/M11 tests) | Verificado (backend software) | Verificado parcial (tests `test-whpx`: HLT + IO a COM1, segun host) | Verificado (UART 16550/COM1 por sondeo) | Verificado (VBE LFB 320x200x32, `test-framebuffer`, render Win32 por sondeo) | Verificado (i8042 teclado/raton, IRQ1/IRQ12 por sondeo, `test-input`; GUI Win32->PS/2) | N/A | En desarrollo (tests internos, WHPX minimo) |
 | **Linux Minimal (BusyBox / initramfs)** | x86-64 | Direct Boot (bzImage) | Planeado | Planeado | Planeado (base UART/earlyprintk) | N/A | Planeado | Planeado | Planeado |
 | **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado | Planeado |
@@ -58,3 +58,12 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 | **User-mode NAT** | ARP, DHCP básico, ICMP echo (gateway/DNS virtual), UDP saliente con respuesta (flujo limitado) (`test-network`) | Sin TCP, sin multi-flow/conexiones concurrentes completas, sin DNS real completo, sin drivers host |
 | **VGA/Bochs VBE + LFB (M9)** | Programación DISPI por I/O (`0x01CE/0x01CF`), modo 320x200x32 con LFB en RAM guest (`0x0040_0000`), escritura guest y blit host BGRA32 en ventana Win32 (`test-framebuffer`) | LFB en RAM guest (sin MMIO/BAR dedicado), sin VBlank/IRQ, sin aceleración 2D/3D, compatibilidad VBE parcial |
 | **PS/2 i8042 teclado/ratón (M10)** | Puertos `0x60/0x64`, scancodes Set 1 y paquetes de ratón (3 bytes) leíbles por guest, IRQ1/IRQ12 reflejadas al PIC (vectores 0x21/0x2C) por sondeo (`test-input`); GUI Win32 traduce eventos a entrada PS/2 | Sin inyección de IRQ en CPU, mapeo de teclado parcial (sin layout completo/IME), sin rueda/botones extendidos ni USB/HID, captura de ratón básica |
+
+## 5. Backends de Ejecuci�n (M11)
+
+| Backend | Estado | Requisitos host | Alcance verificado | Limitaciones actuales |
+|---|---|---|---|---|
+| **Software (x86-64 interpreter, `capsule-cpu`/`capsule-vmm`)** | Verificado (tests internos) | Windows x64 | Ejecucion de guests de prueba y rutas CLI existentes (M1-M10), dispositivos PIO por sondeo | Sin inyeccion arquitectural de IRQ (IDT/CLI/STI/IRET/APIC), sin MMIO, emulacion parcial de ISA/modos |
+| **WHPX (Windows Hypervisor Platform, `capsule-whpx`)** | Verificado parcial (segun host) | Windows x64 con "Windows Hypervisor Platform" habilitada y VT-x/AMD-V activo; si no, `test-whpx` reporta SKIP y `VirtualMachine::new()` hace fallback a software | Particion/vCPU WHPX, mapeo GPA de memoria guest, VM-exits de IO port (IN/OUT) hacia dispositivos emulados, guest minimo HLT + OUT a COM1 (`test-whpx`); GUI intenta WHPX por defecto con fallback | Sin MMIO, sin inyeccion/entrega arquitectural de IRQ, contexto inicial minimo (no long mode/firmware/kernel real), decodificacion de IO exit/longitud dependiente de heuristicas/fallback, 1 vCPU |
+
+

@@ -1,4 +1,4 @@
-# Arquitectura de CapsuleOS
+﻿# Arquitectura de CapsuleOS
 
 CapsuleOS es una plataforma de ejecución y empaquetado para Windows que permite empaquetar sistemas operativos completos dentro de ejecutables portables `.exe`. El usuario final simplemente ejecuta el binario (ej. `Ubuntu.exe`, `Windows.exe`) y obtiene una máquina virtual en ejecución sin necesidad de preinstalar hipervisores externos (VirtualBox, VMware, QEMU).
 
@@ -63,33 +63,26 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Manejo de errores y logging estructurado.
 
 * **`capsule-vmm`**:
-  * Orquestación de la máquina virtual.
-  * Definición del trait unificado `VmBackend`:
-    ```rust
-    pub trait VmBackend {
-        fn create_vm(&mut self, config: &VmConfig) -> Result<(), VmmError>;
-        fn create_vcpu(&mut self, id: usize) -> Result<Box<dyn VirtualCpu>, VmmError>;
-        fn map_memory(&mut self, gpa: u64, size: usize, hva: *mut u8, flags: MemoryFlags) -> Result<(), VmmError>;
-        fn run_vcpu(&mut self, id: usize) -> Result<VcpuExit, VmmError>;
-    }
-    ```
-  * Despacho de salidas de la VM (VM Exits: Port I/O, HLT, errores) y, en el backend software actual, avance por tick/sondeo de dispositivos de plataforma y PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, PS/2 IRQ1/IRQ12, virtqueues/NAT) con acceso a memoria guest, además de stepping incremental para UI, utilidades de lectura/copia de framebuffer VBE e inyección de eventos de entrada PS/2 desde la GUI.
-  * Nota: MMIO y entrega/inyección de interrupciones a la CPU software (IDT/CLI/STI/IRET/APIC) pendientes.
+  * Orquestacion de la maquina virtual.
+  * Seleccion de backend de ejecucion en M11 (`VmBackendKind::{Software,Whpx}`) con API de acceso a registros unificada en `VirtualMachine`; `new()` intenta WHPX solo si se solicita y hace fallback a software, `new_whpx()` fuerza WHPX.
+  * Traits de abstraccion (`VmBackend`/`VirtualCpu`) definidos para evolucion futura; la integracion M11 usa un backend interno concreto (`Software`/`Whpx`) para preservar el comportamiento/API existentes.
+  * Despacho de salidas de la VM (VM Exits/software exits: Port I/O, HLT, errores). En software y en WHPX (IO exits) se reutiliza el mismo despacho de dispositivos PIO y tick/sondeo de plataforma/PCI (PIT/RTC, IDE IRQ14, INTx PCI agregada/IRQ11, PS/2 IRQ1/IRQ12, virtqueues/NAT), ademas de stepping incremental para UI, utilidades de lectura/copia de framebuffer VBE e inyeccion de eventos de entrada PS/2 desde la GUI.
+  * Nota: MMIO y entrega/inyeccion arquitectural de interrupciones a la CPU (IDT/CLI/STI/IRET/APIC) pendientes en ambos caminos.
 
 * **`capsule-cpu`**:
   * Definición del estado de la CPU x86-64: registros de propósito general (RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP, R8-R15), puntero de instrucción (RIP), registro de banderas (RFLAGS), registros de control (CR0, CR2, CR3, CR4, CR8), registros de segmento (CS, DS, SS, ES, FS, GS), tablas descriptores (GDTR, IDTR, LDTR, TR) y MSRs esenciales.
 
-### 2.2. Backends de Ejecución
-* **`capsule-whpx`**:
-  * Backend de virtualización acelerada por hardware nativa de Windows mediante `WinHvPlatform.dll` y `WinHvEmulation.dll`.
-  * Carga dinámica de la biblioteca para garantizar que el binario arranque incluso en hosts sin WHPX.
-  * Creación de partición WHPX, mapeo de memoria EPT/NPT, gestión de interrupciones virtuales (APIC/IOAPIC) y ejecución vCPU.
+### 2.2. Backends de Ejecucion
+* **`capsule-whpx`** (implementado en M11, alcance minimo):
+  * Backend de virtualizacion acelerada por hardware nativa de Windows mediante carga dinamica de `WinHvPlatform.dll` (sin dependencia dura en hosts sin WHPX).
+  * Creacion de particion WHPX, creacion de vCPU, mapeo de la memoria fisica guest (`GuestMemory`) como GPA y ejecucion por `WHvRunVirtualProcessor`.
+  * Sincronizacion de registros generales/RIP/RFLAGS y manejo de VM-exits basicos, principalmente E/S por puerto (IN/OUT), traducidos al bus de dispositivos emulados del VMM.
+  * Pendiente: MMIO, emulacion/instrucciones adicionales segun exits, APIC/IOAPIC/interrupciones virtuales e inyeccion arquitectural, soporte de modos/estado de CPU completo para firmware/kernels reales.
 
-* **`capsule-emulator`**:
-  * Backend de emulación puramente por software para CPUs x86_64.
-  * Permite ejecutar guests en máquinas donde WHPX no está habilitado o no está soportado.
-  * Incluye decodificador x86, intérprete de instrucciones, traducción de direcciones virtuales a físicas (MMU x86-64 con soporte de páginas de 4KB, 2MB y 1GB en modo protegido y modo largo) y manejo de interrupciones/excepciones.
-
+* **`capsule-emulator` / backend software** (integrado actualmente en `capsule-cpu` + `capsule-vmm`):
+  * Ejecucion puramente por software para x86-64 usada como backend por defecto y como fallback cuando WHPX no esta disponible.
+  * Decodificador/interprete de instrucciones, registros y manejo de salidas de E/S/HLT sobre `GuestMemory`.
+  * Limitado: sin entrega arquitectural de interrupciones (IDT/CLI/STI/IRET/APIC) y sin MMU/modos completos equivalentes a un guest moderno.
 ### 2.3. Memoria y Dispositivos
 * **`capsule-memory`**:
   * Asignación y gestión de memoria física del guest (`GuestMemory`).
@@ -164,3 +157,4 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-builder`**:
   * Herramienta de compilación para usuarios que desean generar sus propios ejecutables `.exe` a partir de ISOs o VHDs.
+

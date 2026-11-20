@@ -1,0 +1,14 @@
+﻿[package]
+name = "capsule-whpx"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+capsule-core = { path = "../capsule-core" }
+capsule-memory = { path = "../capsule-memory" }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+] }

@@ -1,10 +1,23 @@
-use capsule_core::types::ByteSize;
+﻿use capsule_core::types::ByteSize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmBackendKind {
+    Software,
+    Whpx,
+}
+
+impl Default for VmBackendKind {
+    fn default() -> Self {
+        VmBackendKind::Software
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct VmConfig {
     pub name: String,
     pub vcpu_count: usize,
     pub memory_size: ByteSize,
+    pub backend: VmBackendKind,
 }
 
 impl Default for VmConfig {
@@ -13,6 +26,7 @@ impl Default for VmConfig {
             name: "CapsuleGuest".to_string(),
             vcpu_count: 1,
             memory_size: ByteSize::from_mib(128),
+            backend: VmBackendKind::Software,
         }
     }
 }

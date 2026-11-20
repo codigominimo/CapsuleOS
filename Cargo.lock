@@ -84,6 +84,16 @@ dependencies = [
  "capsule-memory",
  "capsule-network",
  "capsule-storage",
+ "capsule-whpx",
+]
+
+[[package]]
+name = "capsule-whpx"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
+ "capsule-memory",
+ "windows-sys",
 ]
 
 [[package]]

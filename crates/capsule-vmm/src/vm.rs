@@ -1,61 +1,112 @@
-//! Implementación de la Máquina Virtual (VirtualMachine).
+﻿//! Implementación de la Máquina Virtual (VirtualMachine).
 
-use crate::config::VmConfig;
+use crate::backend::write_io_result_to_regs;
+use crate::config::{VmBackendKind, VmConfig};
 use crate::device::VirtualDevice;
 use crate::state::{VcpuExit, VmStatus};
 use crate::traits::VmmError;
 use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
-use capsule_cpu::{CpuExitReason, SimpleVcpu};
+use capsule_cpu::{CpuExitReason, Registers, SimpleVcpu};
 use capsule_devices::{
     BochsVbe, I8042Ps2Controller, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550,
     VirtioNetPci, COM1_BASE,
 };
 use capsule_memory::GuestMemory;
 use capsule_storage::BlockDevice;
+use capsule_whpx::{WhpxPartition, WhpxRegs, WhpxRunExit};
+
+enum ExecutionBackend {
+    Software(SimpleVcpu),
+    Whpx(WhpxPartition),
+}
 
 pub struct VirtualMachine {
     pub config: VmConfig,
     pub memory: GuestMemory,
-    pub vcpu: SimpleVcpu,
+    exec: ExecutionBackend,
     pub devices: Vec<Box<dyn VirtualDevice>>,
     pub status: VmStatus,
+    backend_kind: VmBackendKind,
+    whpx_fallback_reason: Option<String>,
 }
 
 impl VirtualMachine {
     /// Inicializa una nueva máquina virtual con la configuración dada.
-    /// Registra dispositivos de plataforma basicos: COM1 (UART 16550), PIC 8259, PIT 8254,
-    /// RTC/CMOS, controlador PS/2 i8042 (teclado/raton), Bochs VBE (framebuffer, M9),
+    /// Registra dispositivos de plataforma básicos: COM1 (UART 16550), PIC 8259, PIT 8254,
+    /// RTC/CMOS, controlador PS/2 i8042 (teclado/ratón), Bochs VBE (framebuffer, M9),
     /// un bus PCI (config mechanism #1) y una NIC virtio-net transitional con backend NAT (M8).
-    pub fn new(config: VmConfig) -> Result<Self, VmmError> {
+    /// Selecciona backend de ejecución (software o WHPX) según `config.backend`, con fallback a software.
+    pub fn new(mut config: VmConfig) -> Result<Self, VmmError> {
         let mem_size = config.memory_size.as_bytes() as usize;
         let memory = GuestMemory::new(mem_size).map_err(|e| {
             VmmError::MemoryMappingFailed(format!("Error asignando memoria guest: {}", e))
         })?;
 
-        let vcpu = SimpleVcpu::new(0);
+        let mut fallback_reason = None;
+        let (exec, backend_kind) = match config.backend {
+            VmBackendKind::Software => (ExecutionBackend::Software(SimpleVcpu::new(0)), VmBackendKind::Software),
+            VmBackendKind::Whpx => {
+                match WhpxPartition::create_and_map(&memory) {
+                    Ok(p) => (ExecutionBackend::Whpx(p), VmBackendKind::Whpx),
+                    Err(e) => {
+                        fallback_reason = Some(e.to_string());
+                        config.backend = VmBackendKind::Software;
+                        (ExecutionBackend::Software(SimpleVcpu::new(0)), VmBackendKind::Software)
+                    }
+                }
+            }
+        };
 
         let mut vm = Self {
             config,
             memory,
-            vcpu,
+            exec,
             devices: Vec::new(),
             status: VmStatus::Created,
+            backend_kind,
+            whpx_fallback_reason: fallback_reason,
         };
 
-        vm.add_device(Box::new(Uart16550::new(COM1_BASE)));
-        vm.add_device(Box::new(Pic8259::new()));
-        vm.add_device(Box::new(Pit8254::new()));
-        vm.add_device(Box::new(RtcCmos::new()));
-        vm.add_device(Box::new(I8042Ps2Controller::new()));
-        vm.add_device(Box::new(BochsVbe::new()));
-
-        let mut pci = PciBus::new();
-        pci.attach_device(Box::new(VirtioNetPci::new_default()));
-        vm.add_device(Box::new(pci));
-
+        vm.init_default_devices();
         Ok(vm)
     }
+
+    /// Crea una VM forzando el backend WHPX (sin fallback). Útil para validación explícita.
+    pub fn new_whpx(mut config: VmConfig) -> Result<Self, VmmError> {
+        config.backend = VmBackendKind::Whpx;
+        let mem_size = config.memory_size.as_bytes() as usize;
+        let memory = GuestMemory::new(mem_size).map_err(|e| {
+            VmmError::MemoryMappingFailed(format!("Error asignando memoria guest: {}", e))
+        })?;
+        let p = WhpxPartition::create_and_map(&memory).map_err(|e| VmmError::InitializationFailed(e.to_string()))?;
+        let mut vm = Self {
+            config,
+            memory,
+            exec: ExecutionBackend::Whpx(p),
+            devices: Vec::new(),
+            status: VmStatus::Created,
+            backend_kind: VmBackendKind::Whpx,
+            whpx_fallback_reason: None,
+        };
+        vm.init_default_devices();
+        Ok(vm)
+    }
+
+    fn init_default_devices(&mut self) {
+        self.add_device(Box::new(Uart16550::new(COM1_BASE)));
+        self.add_device(Box::new(Pic8259::new()));
+        self.add_device(Box::new(Pit8254::new()));
+        self.add_device(Box::new(RtcCmos::new()));
+        self.add_device(Box::new(I8042Ps2Controller::new()));
+        self.add_device(Box::new(BochsVbe::new()));
+        let mut pci = PciBus::new();
+        pci.attach_device(Box::new(VirtioNetPci::new_default()));
+        self.add_device(Box::new(pci));
+    }
+
+    pub fn backend_kind(&self) -> VmBackendKind { self.backend_kind }
+    pub fn whpx_fallback_reason(&self) -> Option<&str> { self.whpx_fallback_reason.as_deref() }
 
     /// Registra un dispositivo virtual en la máquina.
     pub fn add_device(&mut self, device: Box<dyn VirtualDevice>) {
@@ -105,8 +156,11 @@ impl VirtualMachine {
                     e
                 ))
             })?;
-        self.vcpu.regs.rip = 0x7C00;
-        self.vcpu.regs.rdx = 0x0080; // convención: DL=0x80 (primer disco)
+        self.set_rip(0x7C00);
+        // convención: DL=0x80 (primer disco)
+        let mut regs = self.get_regs();
+        regs.rdx = (regs.rdx & !0xFF) | 0x80;
+        self.set_regs(&regs);
         self.attach_primary_master_disk(disk)?;
         Ok(())
     }
@@ -136,30 +190,62 @@ impl VirtualMachine {
         )
         .map_err(|e| VmmError::InitializationFailed(e))?;
 
-        self.vcpu.regs.rip = boot_info.entry_rip;
-        self.vcpu.regs.rsi = boot_info.boot_params_addr.raw();
-        self.vcpu.regs.rax = 0;
-        self.vcpu.regs.rbx = 0;
-        self.vcpu.regs.rcx = 0;
-        self.vcpu.regs.rdx = 0;
-        self.vcpu.regs.rdi = 0;
-        self.vcpu.regs.rbp = 0;
+        let mut regs = Registers::new();
+        regs.rip = boot_info.entry_rip;
+        regs.rsi = boot_info.boot_params_addr.raw();
+        regs.rax = 0;
+        regs.rbx = 0;
+        regs.rcx = 0;
+        regs.rdx = 0;
+        regs.rdi = 0;
+        regs.rbp = 0;
+        self.set_regs(&regs);
 
         Ok(boot_info)
     }
 
+    pub fn get_regs(&mut self) -> Registers {
+        match &mut self.exec {
+            ExecutionBackend::Software(cpu) => cpu.regs,
+            ExecutionBackend::Whpx(p) => match p.get_regs() {
+                Ok(r) => whpx_to_regs(r),
+                Err(_) => Registers::new(),
+            },
+        }
+    }
+
+    pub fn set_regs(&mut self, regs: &Registers) {
+        match &mut self.exec {
+            ExecutionBackend::Software(cpu) => cpu.regs = *regs,
+            ExecutionBackend::Whpx(p) => {
+                let _ = p.set_regs(&regs_to_whpx(regs));
+            }
+        }
+    }
+
     /// Establece el puntero de instrucción (RIP) de la vCPU.
     pub fn set_rip(&mut self, rip: u64) {
-        self.vcpu.regs.rip = rip;
+        match &mut self.exec {
+            ExecutionBackend::Software(cpu) => cpu.regs.rip = rip,
+            ExecutionBackend::Whpx(p) => {
+                if let Ok(mut r) = p.get_regs() {
+                    r.rip = rip;
+                    let _ = p.set_regs(&r);
+                }
+            }
+        }
     }
 
     /// Retorna el puntero de instrucción (RIP) actual.
-    pub fn rip(&self) -> u64 {
-        self.vcpu.regs.rip
+    pub fn rip(&mut self) -> u64 {
+        self.get_regs().rip
     }
 
+    pub fn eax(&mut self) -> u32 { self.get_regs().eax() }
+    pub fn rsi(&mut self) -> u64 { self.get_regs().rsi }
+
     fn tick_platform(&mut self) {
-        // Avance aproximado de dispositivos temporizados (1 "tick" por instrucción).
+        // Avance aproximado de dispositivos temporizados (1 "tick" por instrucción/iteración).
         // PIT canal 0 genera IRQ0 al expirar según su modo/programación.
         let mut pit_irq0 = false;
         for dev in &mut self.devices {
@@ -224,83 +310,150 @@ impl VirtualMachine {
         }
     }
 
-    /// Ejecuta un paso de la VM (tick de plataforma + una instruccion de vCPU).
-    /// Devuelve Ok(None) si debe continuar, Ok(Some(exit)) si hay salida,
-    /// o error en fallo. Util para bucles de UI/tiempo real que intercalan renderizado.
+    fn dispatch_io_out(&mut self, port: u16, data: u32, size: u8) -> bool {
+        let mut handled = false;
+        for dev in &mut self.devices {
+            if dev.handles_port(port) {
+                dev.write_io(port, data, size);
+                handled = true;
+                break;
+            }
+        }
+        handled
+    }
+
+    fn dispatch_io_in(&mut self, port: u16, size: u8) -> u32 {
+        for dev in &mut self.devices {
+            if dev.handles_port(port) {
+                return dev.read_io(port, size);
+            }
+        }
+        0xFFFFFFFFu32
+    }
+
+    fn io_in_handled(&self, port: u16) -> bool {
+        self.devices.iter().any(|d| d.handles_port(port))
+    }
+
+    /// Ejecuta un paso de la VM.
+    /// - Software: tick + una instrucción.
+    /// - WHPX: tick + una ejecución hasta VM-exit (puede abarcar muchas instrucciones).
     pub fn step_once(&mut self) -> Result<Option<VcpuExit>, VmmError> {
         if self.status == VmStatus::Created || self.status == VmStatus::Paused {
             self.status = VmStatus::Running;
         }
         self.tick_platform();
-        match self.vcpu.step(&mut self.memory) {
-            Ok(None) => Ok(None),
-            Ok(Some(CpuExitReason::Halt)) => {
-                self.status = VmStatus::Halted;
-                Ok(Some(VcpuExit::Halt))
-            }
-            Ok(Some(CpuExitReason::IoOut { port, data, size })) => {
-                let mut handled = false;
-                for dev in &mut self.devices {
-                    if dev.handles_port(port) {
-                        dev.write_io(port, data, size);
-                        handled = true;
-                        break;
+
+        match self.backend_kind {
+            VmBackendKind::Software => {
+                let cpu_res = match &mut self.exec {
+                    ExecutionBackend::Software(cpu) => cpu.step(&mut self.memory),
+                    ExecutionBackend::Whpx(_) => return Err(VmmError::Unsupported),
+                };
+                match cpu_res {
+                    Ok(None) => Ok(None),
+                    Ok(Some(CpuExitReason::Halt)) => { self.status = VmStatus::Halted; Ok(Some(VcpuExit::Halt)) }
+                    Ok(Some(CpuExitReason::IoOut { port, data, size })) => {
+                        let handled = self.dispatch_io_out(port, data, size);
+                        self.tick_platform();
+                        if handled { Ok(None) } else { Ok(Some(VcpuExit::IoOut { port, data, size })) }
                     }
-                }
-                self.tick_platform();
-                if handled {
-                    Ok(None)
-                } else {
-                    Ok(Some(VcpuExit::IoOut { port, data, size }))
-                }
-            }
-            Ok(Some(CpuExitReason::IoIn { port, size })) => {
-                let mut handled = false;
-                for dev in &mut self.devices {
-                    if dev.handles_port(port) {
-                        let val = dev.read_io(port, size);
-                        match size {
-                            1 => {
-                                self.vcpu.regs.rax =
-                                    (self.vcpu.regs.rax & !0xFF) | (val as u64 & 0xFF)
+                    Ok(Some(CpuExitReason::IoIn { port, size })) => {
+                        let handled = self.io_in_handled(port);
+                        if handled {
+                            let val = self.dispatch_io_in(port, size);
+                            if let ExecutionBackend::Software(cpu) = &mut self.exec {
+                                write_io_result_to_regs(&mut cpu.regs, size, val);
                             }
-                            2 => {
-                                self.vcpu.regs.rax =
-                                    (self.vcpu.regs.rax & !0xFFFF) | (val as u64 & 0xFFFF)
-                            }
-                            4 => self.vcpu.regs.set_eax(val),
-                            _ => {}
                         }
-                        handled = true;
-                        break;
+                        self.tick_platform();
+                        if handled { Ok(None) } else { Ok(Some(VcpuExit::IoIn { port, size })) }
                     }
+                    Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
+                        let rip = self.rip();
+                        self.status = VmStatus::Error;
+                        Err(VmmError::VcpuError(format!("Opcode no válido ejecutado: 0x{:02X} en RIP 0x{:016X}", op, rip)))
+                    }
+                    Ok(Some(CpuExitReason::MemoryFault(msg))) => { self.status = VmStatus::Error; Err(VmmError::MemoryMappingFailed(msg)) }
+                    Err(err) => { self.status = VmStatus::Error; Err(VmmError::VcpuError(err)) }
                 }
-                self.tick_platform();
-                if handled {
-                    Ok(None)
-                } else {
-                    Ok(Some(VcpuExit::IoIn { port, size }))
-                }
             }
-            Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
-                self.status = VmStatus::Error;
-                Err(VmmError::VcpuError(format!(
-                    "Opcode no valido ejecutado: 0x{:02X} en RIP 0x{:016X}",
-                    op, self.vcpu.regs.rip
-                )))
-            }
-            Ok(Some(CpuExitReason::MemoryFault(msg))) => {
-                self.status = VmStatus::Error;
-                Err(VmmError::MemoryMappingFailed(msg))
-            }
-            Err(err) => {
-                self.status = VmStatus::Error;
-                Err(VmmError::VcpuError(err))
+            VmBackendKind::Whpx => {
+                self.run_whpx_until_exit_or_continue()
             }
         }
     }
 
-    /// Avanza la VM hasta max_steps instrucciones o hasta una salida.
+    /// Para WHPX: ejecuta hasta una salida significativa o maneja un IO y retorna None (continuar).
+    fn run_whpx_until_exit_or_continue(&mut self) -> Result<Option<VcpuExit>, VmmError> {
+        loop {
+            let mut whpx_exit = match &mut self.exec {
+                ExecutionBackend::Whpx(p) => p.run().map_err(|e| VmmError::VcpuError(e.to_string()))?,
+                _ => return Err(VmmError::Unsupported),
+            };
+            // Fallback: si no se pudo obtener longitud de instrucción IO desde contexto de salida, decodificar desde memoria guest.
+            if let WhpxRunExit::IoPort { ref mut instruction_len, .. } = whpx_exit {
+                if *instruction_len == 0 {
+                    if let Ok(r) = match &mut self.exec { ExecutionBackend::Whpx(p) => p.get_regs(), _ => unreachable!() } {
+                        *instruction_len = self.decode_io_instruction_len(r.rip);
+                    }
+                }
+            }
+            match whpx_exit {
+                WhpxRunExit::Halted => { self.status = VmStatus::Halted; return Ok(Some(VcpuExit::Halt)); }
+                WhpxRunExit::Canceled | WhpxRunExit::Interrupted => { self.tick_platform(); return Ok(None); }
+                WhpxRunExit::IoPort { port, access_size, is_write, rax, instruction_len } => {
+                    if is_write {
+                        let data = (rax & mask_for_size(access_size)) as u32;
+                        let handled = self.dispatch_io_out(port, data, access_size);
+                        // advance RIP and tick
+                        if instruction_len > 0 {
+                            if let ExecutionBackend::Whpx(p) = &mut self.exec { let _ = p.advance_rip(instruction_len as u64); }
+                        } else {
+                            // Si no se pudo decodificar longitud, no avanzar RIP causaría bucle infinito.
+                            // Intentar continuar sin avance solo no es seguro; reportar si no se puede avanzar.
+                        }
+                        self.tick_platform();
+                        if handled {
+                            if instruction_len == 0 {
+                                self.status = VmStatus::Error;
+                                return Err(VmmError::VcpuError("WHPX IO OUT manejado pero longitud de instruccion desconocida; no se puede continuar".into()));
+                            }
+                            return Ok(None);
+                        } else {
+                            return Ok(Some(VcpuExit::IoOut { port, data, size: access_size }));
+                        }
+                    } else {
+                        let handled = self.io_in_handled(port);
+                        let val = if handled { self.dispatch_io_in(port, access_size) } else { 0xFFFF_FFFFu32 };
+                        if let ExecutionBackend::Whpx(p) = &mut self.exec {
+                            if handled {
+                                let mut rr = whpx_to_regs(p.get_regs().map_err(|e| VmmError::VcpuError(e.to_string()))?);
+                                write_io_result_to_regs(&mut rr, access_size, val);
+                                if instruction_len > 0 {
+                                    rr.rip = rr.rip.wrapping_add(instruction_len as u64);
+                                }
+                                p.set_regs(&regs_to_whpx(&rr)).map_err(|e| VmmError::VcpuError(e.to_string()))?;
+                            } else if instruction_len > 0 {
+                                let _ = p.advance_rip(instruction_len as u64);
+                            }
+                        }
+                        self.tick_platform();
+                        if handled { return Ok(None); } else { return Ok(Some(VcpuExit::IoIn { port, size: access_size })); }
+                    }
+                }
+                WhpxRunExit::MemoryAccess { gpa } => {
+                    // No MMIO dispatch model; report as unsupported/fault-like
+                    self.status = VmStatus::Error;
+                    return Err(VmmError::MemoryMappingFailed(format!("WHPX memory/MMIO access no soportado en GPA 0x{gpa:X}")));
+                }
+                WhpxRunExit::Unsupported(s) => { self.status = VmStatus::Error; return Err(VmmError::VcpuError(format!("Salida WHPX no soportada: {s}"))); }
+                WhpxRunExit::Failed(s) => { self.status = VmStatus::Error; return Err(VmmError::VcpuError(format!("Fallo WHPX: {s}"))); }
+            }
+        }
+    }
+
+    /// Avanza la VM hasta max_steps instrucciones/eventos o hasta una salida.
     pub fn run_steps(&mut self, max_steps: usize) -> Result<Option<VcpuExit>, VmmError> {
         for _ in 0..max_steps {
             if let Some(exit) = self.step_once()? {
@@ -313,7 +466,7 @@ impl VirtualMachine {
         Ok(None)
     }
 
-    /// Devuelve informacion del framebuffer VBE si esta habilitado con LFB.
+    /// Devuelve información del framebuffer VBE si está habilitado con LFB.
     /// (base_gpa, width, height, bpp, stride_bytes)
     pub fn vbe_framebuffer_info(&self) -> Option<(u64, u32, u32, u32, usize)> {
         for dev in &self.devices {
@@ -333,7 +486,7 @@ impl VirtualMachine {
     }
 
     /// Copia el framebuffer lineal guest a un buffer BGRA32 (0x00RRGGBB little-endian en memoria => B,G,R,X)
-    /// adecuado para DIB top-down de 32bpp. Devuelve (w,h) si hay framebuffer valido.
+    /// adecuado para DIB top-down de 32bpp. Devuelve (w,h) si hay framebuffer válido.
     pub fn copy_framebuffer_bgra32(&self, out: &mut [u32]) -> Option<(u32, u32)> {
         let (base, w, h, bpp, stride) = self.vbe_framebuffer_info()?;
         if w == 0 || h == 0 { return None; }
@@ -370,7 +523,6 @@ impl VirtualMachine {
                             let mut b = [0u8; 2];
                             if self.memory.read_bytes(GuestAddress::new((off) as u64), &mut b).is_ok() {
                                 let v = u16::from_le_bytes(b);
-                                // RGB565
                                 let r5 = ((v >> 11) & 0x1F) as u32;
                                 let g6 = ((v >> 5) & 0x3F) as u32;
                                 let b5 = (v & 0x1F) as u32;
@@ -389,7 +541,7 @@ impl VirtualMachine {
         Some((w, h))
     }
 
-    /// Encola scancodes PS/2 Set 1 (teclado) en el controlador i8042, si esta presente.
+    /// Encola scancodes PS/2 Set 1 (teclado) en el controlador i8042, si está presente.
     pub fn inject_ps2_scancodes(&mut self, scancodes: &[u8]) {
         for dev in &mut self.devices {
             if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
@@ -399,8 +551,7 @@ impl VirtualMachine {
         }
     }
 
-    /// Encola evento de raton PS/2 (movimiento relativo, botones, rueda) en el controlador i8042.
-    /// `buttons`: bit0=izq, bit1=der, bit2=medio.
+    /// Encola evento de ratón PS/2 (movimiento relativo, botones, rueda) en el controlador i8042.
     pub fn inject_ps2_mouse_event(&mut self, dx: i32, dy: i32, buttons: u8, wheel: i32) {
         for dev in &mut self.devices {
             if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
@@ -410,7 +561,7 @@ impl VirtualMachine {
         }
     }
 
-    /// Encola un paquete PS/2 de raton sin movimiento (p.ej. cambio de botones).
+    /// Encola un paquete PS/2 de ratón sin movimiento (p.ej. cambio de botones).
     pub fn inject_ps2_mouse_button_packet(&mut self) {
         for dev in &mut self.devices {
             if let Some(ps2) = dev.as_any_mut().downcast_mut::<I8042Ps2Controller>() {
@@ -420,86 +571,74 @@ impl VirtualMachine {
         }
     }
 
-    /// Ejecuta el bucle principal de la vCPU hasta alcanzar una condición de salida (HALT, Error, etc.).
-    /// El bucle avanza dispositivos de plataforma (PIT/RTC), sondea dispositivos PCI (virtqueues/NAT)
-    /// con acceso a memoria guest y actualiza líneas IRQ básicas (PIC, IDE IRQ14, PCI INTx/IRQ11).
-    /// La inyección de interrupciones en la CPU software no está implementada aún; los guests deben
-    /// usar sondeo (polling) o esperar soporte futuro de interrupciones/IDT.
+    /// Ejecuta el bucle principal de la VM hasta alcanzar una condición de salida.
     pub fn run(&mut self) -> Result<VcpuExit, VmmError> {
         self.status = VmStatus::Running;
-
         loop {
-            self.tick_platform();
-            match self.vcpu.step(&mut self.memory) {
-                Ok(None) => {
+            if let Some(exit) = self.step_once()? {
+                // step_once may return None for handled IO; Some for terminal/unhandled
+                if matches!(exit, VcpuExit::Halt) || matches!(exit, VcpuExit::IoIn{..}|VcpuExit::IoOut{..}|VcpuExit::Shutdown) {
+                    return Ok(exit);
+                }
+                return Ok(exit);
+            }
+            // continue
+        }
+    }
+}
+
+fn mask_for_size(size: u8) -> u64 {
+    match size { 1 => 0xFF, 2 => 0xFFFF, 4 => 0xFFFF_FFFF, _ => u64::MAX }
+}
+
+impl VirtualMachine {
+    /// Decodificación mínima de longitud para instrucciones IN/OUT (puerto inmediato o DX), con prefijos 0x66/0x67.
+    /// Usado como fallback cuando WHPX no proporciona longitud de instrucción en el contexto de salida.
+    fn decode_io_instruction_len(&self, rip: u64) -> u8 {
+        let mut off = 0u64;
+        let mut len: u8 = 0;
+        for _ in 0..4 {
+            let b = match self.memory.read_u8(GuestAddress::new(rip.wrapping_add(off))) { Ok(v) => v, Err(_) => return 0 };
+            match b {
+                0x66 | 0x67 | 0xF2 | 0xF3 | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => {
+                    len = len.saturating_add(1);
+                    off += 1;
                     continue;
                 }
-                Ok(Some(CpuExitReason::Halt)) => {
-                    self.status = VmStatus::Halted;
-                    return Ok(VcpuExit::Halt);
+                0x40..=0x4F => { // REX
+                    len = len.saturating_add(1);
+                    off += 1;
+                    continue;
                 }
-                Ok(Some(CpuExitReason::IoOut { port, data, size })) => {
-                    let mut handled = false;
-                    for dev in &mut self.devices {
-                        if dev.handles_port(port) {
-                            dev.write_io(port, data, size);
-                            handled = true;
-                            break;
-                        }
-                    }
-
-                    // La E/S puede cambiar estado de dispositivos (p.ej. PIC/IDE/PCI/PS2); refrescar.
-                    self.tick_platform();
-
-                    if !handled {
-                        return Ok(VcpuExit::IoOut { port, data, size });
-                    }
-                }
-                Ok(Some(CpuExitReason::IoIn { port, size })) => {
-                    let mut handled = false;
-                    for dev in &mut self.devices {
-                        if dev.handles_port(port) {
-                            let val = dev.read_io(port, size);
-                            match size {
-                                1 => {
-                                    self.vcpu.regs.rax =
-                                        (self.vcpu.regs.rax & !0xFF) | (val as u64 & 0xFF)
-                                }
-                                2 => {
-                                    self.vcpu.regs.rax =
-                                        (self.vcpu.regs.rax & !0xFFFF) | (val as u64 & 0xFFFF)
-                                }
-                                4 => self.vcpu.regs.set_eax(val),
-                                _ => {}
-                            }
-                            handled = true;
-                            break;
-                        }
-                    }
-
-                    // Lecturas de estado (IDE/PIC/RTC/PCI) pueden reconocer/limpiar condiciones.
-                    self.tick_platform();
-
-                    if !handled {
-                        return Ok(VcpuExit::IoIn { port, size });
-                    }
-                }
-                Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
-                    self.status = VmStatus::Error;
-                    return Err(VmmError::VcpuError(format!(
-                        "Opcode no válido ejecutado: 0x{:02X} en RIP 0x{:016X}",
-                        op, self.vcpu.regs.rip
-                    )));
-                }
-                Ok(Some(CpuExitReason::MemoryFault(msg))) => {
-                    self.status = VmStatus::Error;
-                    return Err(VmmError::MemoryMappingFailed(msg));
-                }
-                Err(err) => {
-                    self.status = VmStatus::Error;
-                    return Err(VmmError::VcpuError(err));
-                }
+                _ => break,
             }
         }
+        let op = match self.memory.read_u8(GuestAddress::new(rip.wrapping_add(off))) { Ok(v) => v, Err(_) => return 0 };
+        let op_len = match op {
+            0xE4 | 0xE5 | 0xE6 | 0xE7 => 2, // op imm8
+            0xEC | 0xED | 0xEE | 0xEF => 1, // op (DX)
+            _ => 0,
+        };
+        if op_len == 0 { 0 } else { len.saturating_add(op_len) }
+    }
+}
+
+fn regs_to_whpx(r: &Registers) -> WhpxRegs {
+    WhpxRegs {
+        rax: r.rax, rbx: r.rbx, rcx: r.rcx, rdx: r.rdx,
+        rsi: r.rsi, rdi: r.rdi, rbp: r.rbp, rsp: r.rsp,
+        r8: r.r8, r9: r.r9, r10: r.r10, r11: r.r11,
+        r12: r.r12, r13: r.r13, r14: r.r14, r15: r.r15,
+        rip: r.rip, rflags: r.rflags,
+    }
+}
+
+fn whpx_to_regs(r: WhpxRegs) -> Registers {
+    Registers {
+        rax: r.rax, rbx: r.rbx, rcx: r.rcx, rdx: r.rdx,
+        rsi: r.rsi, rdi: r.rdi, rbp: r.rbp, rsp: r.rsp,
+        r8: r.r8, r9: r.r9, r10: r.r10, r11: r.r11,
+        r12: r.r12, r13: r.r13, r14: r.r14, r15: r.r15,
+        rip: r.rip, rflags: r.rflags,
     }
 }

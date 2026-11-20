@@ -1,4 +1,4 @@
-use capsule_boot::HDRS_MAGIC;
+﻿use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
 use capsule_vmm::{VcpuExit, VirtualMachine, VmConfig, VmStatus};
 
@@ -8,6 +8,8 @@ fn test_minimal_vm_lifecycle_and_halt() {
         name: "TestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(1),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear la VM");
@@ -22,14 +24,14 @@ fn test_minimal_vm_lifecycle_and_halt() {
 
     let entry_point = GuestAddress::new(0x0000);
     vm.load_code(entry_point, &guest_code)
-        .expect("Fallo al cargar código guest");
+        .expect("Fallo al cargar cÃ³digo guest");
     vm.set_rip(0);
 
-    let exit = vm.run().expect("Error durante la ejecución de la VM");
+    let exit = vm.run().expect("Error durante la ejecuciÃ³n de la VM");
 
     assert_eq!(exit, VcpuExit::Halt, "El guest debe terminar con HLT");
     assert_eq!(vm.status, VmStatus::Halted, "El estado de la VM debe ser Halted");
-    assert_eq!(vm.vcpu.regs.eax(), 0x53, "EAX debe ser 0x42 + 0x10 + 1 = 0x53 (83 decimal)");
+    assert_eq!(vm.eax(), 0x53, "EAX debe ser 0x42 + 0x10 + 1 = 0x53 (83 decimal)");
     assert_eq!(vm.rip(), 11, "RIP debe haber avanzado exactamente 11 bytes");
 }
 
@@ -39,6 +41,8 @@ fn test_vm_serial_com1_linux_earlyprintk() {
         name: "SerialPrintkVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
@@ -47,7 +51,7 @@ fn test_vm_serial_com1_linux_earlyprintk() {
     let message = b"Linux booting on CapsuleOS\n\0";
     vm.load_code(GuestAddress::new(0x100), message).unwrap();
 
-    // Código guest que simula la rutina earlyprintk de Linux sobre UART 16550:
+    // CÃ³digo guest que simula la rutina earlyprintk de Linux sobre UART 16550:
     // 0: mov esi, 0x100          ; BE 00 01 00 00
     // print_loop (5):
     // 5: mov al, [esi]           ; 8A 06
@@ -86,7 +90,7 @@ fn test_vm_serial_com1_linux_earlyprintk() {
     assert_eq!(exit, VcpuExit::Halt);
 
     // Buscar el dispositivo UART en los dispositivos registrados de la VM
-    // para verificar que recibió la cadena transmitida
+    // para verificar que recibiÃ³ la cadena transmitida
     let uart_dev = vm
         .devices
         .iter()
@@ -102,6 +106,8 @@ fn test_vm_linux_direct_boot_protocol() {
         name: "LinuxBootVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(128),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
@@ -127,16 +133,16 @@ fn test_vm_linux_direct_boot_protocol() {
         .expect("Fallo en load_linux");
 
     assert_eq!(boot_info.entry_rip, 0x100000);
-    assert_eq!(vm.vcpu.regs.rip, 0x100000);
-    assert_eq!(vm.vcpu.regs.rsi, 0x7000, "RSI debe apuntar a la Zero Page (0x7000)");
+    assert_eq!(vm.rip(), 0x100000);
+    assert_eq!(vm.rsi(), 0x7000, "RSI debe apuntar a la Zero Page (0x7000)");
 
     let exit = vm.run().expect("Error ejecutando kernel");
     assert_eq!(exit, VcpuExit::Halt);
 
     assert_eq!(
-        vm.vcpu.regs.eax(),
+        vm.eax(),
         0x8000,
-        "El kernel debe haber leído cmd_line_ptr = 0x8000 desde boot_params en RSI"
+        "El kernel debe haber leÃ­do cmd_line_ptr = 0x8000 desde boot_params en RSI"
     );
 }
 
@@ -148,10 +154,12 @@ fn test_vm_ide_pio_identify_and_read() {
         name: "IdePioVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
 
-    // Disco con patrón conocido en sector 0 (LBA 0)
+    // Disco con patrÃ³n conocido en sector 0 (LBA 0)
     let mut disk = MemoryDisk::new(64, DEFAULT_SECTOR_SIZE).expect("disk");
     let mut sector0 = vec![0u8; DEFAULT_SECTOR_SIZE as usize];
     for (i, b) in sector0.iter_mut().enumerate() {
@@ -229,7 +237,7 @@ fn test_vm_ide_pio_identify_and_read() {
         .expect("read buffer");
     assert_eq!(
         buf, sector0,
-        "El sector leído por ATA PIO debe coincidir con el disco"
+        "El sector leÃ­do por ATA PIO debe coincidir con el disco"
     );
 }
 
@@ -270,13 +278,15 @@ fn test_vm_ide_pio_write_flush_persistence() {
             name: "IdePioWriteVM".to_string(),
             vcpu_count: 1,
             memory_size: ByteSize::from_mib(2),
-        };
+        
+        backend: capsule_vmm::VmBackendKind::Software,
+    };
         let mut vm = VirtualMachine::new(config).expect("create vm");
         let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");
         vm.attach_primary_master_disk(Box::new(disk))
             .expect("attach disk");
 
-        // Patrón que el guest escribirá en LBA 2
+        // PatrÃ³n que el guest escribirÃ¡ en LBA 2
         vm.memory
             .write_bytes(GuestAddress::new(0x2000), &sector2_pattern)
             .expect("write pattern to guest mem");
@@ -406,6 +416,8 @@ fn test_vm_boot_from_disk_sector_reads_next_sector_via_ide() {
         name: "BootFromDiskVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
     let mut vm = VirtualMachine::new(config).expect("create vm");
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw disk");
@@ -467,7 +479,9 @@ fn test_vm_ide_pio_multisector_read_write_via_guest() {
             name: "IdeMultiSectorVM".to_string(),
             vcpu_count: 1,
             memory_size: ByteSize::from_mib(2),
-        };
+        
+        backend: capsule_vmm::VmBackendKind::Software,
+    };
         let mut vm = VirtualMachine::new(config).expect("create vm");
         let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");
         vm.attach_primary_master_disk(Box::new(disk))
@@ -561,3 +575,6 @@ fn test_vm_ide_pio_multisector_read_write_via_guest() {
     // Sanity: MemoryDisk path not used above, but keep import meaningful for future variations.
     let _ = MemoryDisk::new(1, DEFAULT_SECTOR_SIZE).expect("memdisk");
 }
+
+
+

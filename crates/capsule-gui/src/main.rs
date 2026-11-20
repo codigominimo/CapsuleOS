@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M10 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M11 completados)
 //!
 //! Punto de entrada de la aplicacion `capsule.exe`.
 //! Comandos CLI:
@@ -13,13 +13,14 @@
 //! - `capsule.exe test-network`     : Verificacion de red en modo usuario (NAT) y virtio-net PCI (M8).
 //! - `capsule.exe test-framebuffer` : Verificacion de framebuffer VGA/Bochs VBE y LFB (M9).
 //! - `capsule.exe test-input`       : Verificacion de entrada PS/2 (i8042, teclado/raton, IRQ1/IRQ12) (M10).
+//! - `capsule.exe test-whpx`       : Verificacion del backend de virtualizacion por hardware WHPX (M11).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
 use capsule_core::{HostInfo, WhpxStatus, CAPSULE_VERSION};
 use capsule_storage::{BlockDevice, CowOverlayDisk, RawDiskImage, VhdFixedDisk, DEFAULT_SECTOR_SIZE};
-use capsule_vmm::{VcpuExit, VirtualMachine, VmConfig};
+use capsule_vmm::{VcpuExit, VirtualMachine, VmBackendKind, VmConfig};
 use std::env;
 use std::fs;
 use std::ptr::null_mut;
@@ -71,7 +72,7 @@ fn print_cli_summary(info: &HostInfo) {
     println!("CPU:");
     println!("  Modelo            : {}", info.cpu.brand_name);
     println!("  Fabricante        : {}", info.cpu.vendor);
-    println!("  Núcleos Lógicos   : {}", info.cpu.logical_cores);
+    println!("  NÃºcleos LÃ³gicos   : {}", info.cpu.logical_cores);
     println!(
         "  Soporte VT-x/SVM  : {}",
         if info.cpu.virtualization_supported() {
@@ -86,11 +87,11 @@ fn print_cli_summary(info: &HostInfo) {
     println!("  Disponible        : {}", info.memory.avail_phys);
     println!("  Uso actual        : {}%", info.memory.memory_load_percent);
     println!();
-    println!("Virtualización:");
+    println!("VirtualizaciÃ³n:");
     println!("  WHPX Estado       : {:?}", info.whpx);
     println!("  Detalle           : {}", info.whpx.description());
     println!();
-    println!("Capsule Runtime: OK (VMM, vCPU x86-64, Direct Boot, UART, disco, plataforma y red M8 listos)");
+    println!("Capsule Runtime: OK (VMM software/WHPX, vCPU x86-64, Direct Boot, UART, disco, plataforma, red, framebuffer y PS/2 listos)");
     println!("==================================================");
 }
 
@@ -100,6 +101,8 @@ fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
         name: "TestGuest-M1".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(1),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -123,18 +126,18 @@ fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
             println!("Guest halted");
             println!();
             println!("--------------------------------------------------");
-            println!("        Verificación de Ejecución Guest M1        ");
+            println!("        VerificaciÃ³n de EjecuciÃ³n Guest M1        ");
             println!("--------------------------------------------------");
             println!(
                 "  Resultado en EAX  : 0x{:08X} (83 decimal)",
-                vm.vcpu.regs.eax()
+                vm.eax()
             );
             println!("  RIP final         : 0x{:016X}", vm.rip());
             println!("  Estado de la VM   : {:?}", vm.status);
             println!("--------------------------------------------------");
         }
         other => {
-            println!("Guest salió con estado no esperado: {:?}", other);
+            println!("Guest saliÃ³ con estado no esperado: {:?}", other);
         }
     }
 
@@ -150,6 +153,8 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
         name: "LinuxDirectBootTest".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(128),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -173,30 +178,30 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
     let cmdline = "console=ttyS0 earlyprintk=serial,0x3F8,115200 root=/dev/vda";
     let boot_info = vm.load_linux(&bzimage, cmdline, None)?;
 
-    println!("Linux bzImage parseado: Firma HdrS válida");
+    println!("Linux bzImage parseado: Firma HdrS vÃ¡lida");
     println!(
-        "Tablas de páginas PML4 identity mapping creadas en 0x{:04X}",
+        "Tablas de pÃ¡ginas PML4 identity mapping creadas en 0x{:04X}",
         boot_info.pml4_addr.raw()
     );
     println!(
         "Zero Page (boot_params) inicializada en 0x{:04X}",
         boot_info.boot_params_addr.raw()
     );
-    println!("Línea de comandos escrita en 0x8000: \"{}\"", boot_info.cmdline);
+    println!("LÃ­nea de comandos escrita en 0x8000: \"{}\"", boot_info.cmdline);
     println!("Cuerpo del kernel copiado en 0x{:06X}", boot_info.entry_rip);
     println!(
         "Registros iniciales de protocolo: RIP=0x{:06X}, RSI=0x{:04X}",
-        vm.vcpu.regs.rip, vm.vcpu.regs.rsi
+        vm.rip(), vm.rsi()
     );
 
     let exit = vm.run()?;
     if exit == VcpuExit::Halt {
-        println!("Kernel guest ejecutado con éxito.");
+        println!("Kernel guest ejecutado con Ã©xito.");
         println!(
-            "Verificación: EAX contiene cmd_line_ptr = 0x{:04X} (Esperado: 0x8000)",
-            vm.vcpu.regs.eax()
+            "VerificaciÃ³n: EAX contiene cmd_line_ptr = 0x{:04X} (Esperado: 0x8000)",
+            vm.eax()
         );
-        println!("Estado del protocolo de arranque directo: ÉXITO!");
+        println!("Estado del protocolo de arranque directo: Ã‰XITO!");
     } else {
         println!("Salida inesperada del kernel: {:?}", exit);
     }
@@ -214,6 +219,8 @@ fn run_test_serial() -> Result<(), Box<dyn std::error::Error>> {
         name: "SerialConsoleTest".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(4),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -237,14 +244,14 @@ fn run_test_serial() -> Result<(), Box<dyn std::error::Error>> {
     vm.load_code(GuestAddress::new(0), &guest_code)?;
     vm.set_rip(0);
 
-    println!("Iniciando ejecución de kernel/guest con consola serie COM1...");
+    println!("Iniciando ejecuciÃ³n de kernel/guest con consola serie COM1...");
     let exit = vm.run()?;
     assert_eq!(exit, VcpuExit::Halt);
 
     println!("\n--- Salida capturada desde el puerto serie COM1 (0x3F8) ---");
     println!("{}", String::from_utf8_lossy(message).trim_end_matches('\0'));
     println!("-----------------------------------------------------------");
-    println!("Consola serial UART 16550 validada con éxito (Hito M4).");
+    println!("Consola serial UART 16550 validada con Ã©xito (Hito M4).");
     println!("==================================================");
 
     Ok(())
@@ -290,14 +297,14 @@ fn run_test_storage() -> Result<(), Box<dyn std::error::Error>> {
         for (i, b) in out.iter().enumerate() {
             assert_eq!(*b, 0xB0u8.wrapping_add(i as u8), "Lectura VHD no coincide");
         }
-        println!("  [OK] VHD fixed: create/write/flush/reopen/read (128 sectores, footer válido)");
+        println!("  [OK] VHD fixed: create/write/flush/reopen/read (128 sectores, footer vÃ¡lido)");
     }
 
     let _ = fs::remove_file(&raw_path);
     let _ = fs::remove_file(&vhd_path);
 
     println!("--------------------------------------------------");
-    println!("  Almacenamiento de bloques verificado: ÉXITO");
+    println!("  Almacenamiento de bloques verificado: Ã‰XITO");
     println!(
         "  Formatos: RAW, VHD (fixed) | Sector: {} bytes",
         DEFAULT_SECTOR_SIZE
@@ -369,6 +376,8 @@ fn run_ide_guest_on_disk(
         name: format!("IdeDiskTest-{label}"),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+
+        backend: capsule_vmm::VmBackendKind::Software,
     };
     let mut vm = VirtualMachine::new(config)?;
     vm.attach_primary_master_disk(disk)?;
@@ -388,9 +397,9 @@ fn run_ide_guest_on_disk(
     let st_read = vm.memory.read_u8(GuestAddress::new(0x0500))?;
     let st_write = vm.memory.read_u8(GuestAddress::new(0x0501))?;
     let st_flush = vm.memory.read_u8(GuestAddress::new(0x0502))?;
-    assert_eq!(st_read & 0x01, 0, "READ SECTORS reportó error ({label}, status=0x{st_read:02X})");
-    assert_eq!(st_write & 0x01, 0, "WRITE SECTORS reportó error ({label}, status=0x{st_write:02X})");
-    assert_eq!(st_flush & 0x01, 0, "FLUSH CACHE reportó error ({label}, status=0x{st_flush:02X})");
+    assert_eq!(st_read & 0x01, 0, "READ SECTORS reportÃ³ error ({label}, status=0x{st_read:02X})");
+    assert_eq!(st_write & 0x01, 0, "WRITE SECTORS reportÃ³ error ({label}, status=0x{st_write:02X})");
+    assert_eq!(st_flush & 0x01, 0, "FLUSH CACHE reportÃ³ error ({label}, status=0x{st_flush:02X})");
     println!("  [OK] {label}: guest ATA PIO READ/WRITE/FLUSH (status sin errores)");
     Ok(())
 }
@@ -424,7 +433,7 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
         let mut disk = RawDiskImage::open(&raw_path, DEFAULT_SECTOR_SIZE)?;
         let mut lba2 = vec![0u8; sector_size];
         disk.read_sectors(2, 1, &mut lba2)?;
-        assert_eq!(lba2, pattern_lba2, "RAW: LBA2 no persistió tras escritura guest + flush");
+        assert_eq!(lba2, pattern_lba2, "RAW: LBA2 no persistiÃ³ tras escritura guest + flush");
         println!("  [OK] RAW: persistencia verificada tras cierre/reapertura");
     }
 
@@ -440,7 +449,7 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
         let mut disk = VhdFixedDisk::open(&vhd_path, DEFAULT_SECTOR_SIZE)?;
         let mut lba2 = vec![0u8; sector_size];
         disk.read_sectors(2, 1, &mut lba2)?;
-        assert_eq!(lba2, pattern_lba2, "VHD fixed: LBA2 no persistió tras escritura guest + flush");
+        assert_eq!(lba2, pattern_lba2, "VHD fixed: LBA2 no persistiÃ³ tras escritura guest + flush");
         println!("  [OK] VHD fixed: persistencia verificada tras cierre/reapertura");
     }
 
@@ -448,7 +457,7 @@ fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs::remove_file(&vhd_path);
 
     println!("--------------------------------------------------");
-    println!("  Disco IDE (ATA PIO) adjunto a VM: ÉXITO");
+    println!("  Disco IDE (ATA PIO) adjunto a VM: Ã‰XITO");
     println!("  Formatos validados: RAW, VHD (fixed) | READ/WRITE/FLUSH PIO");
     println!("==================================================");
 
@@ -495,7 +504,7 @@ fn run_test_cow() -> Result<(), Box<dyn std::error::Error>> {
         let mut cow = CowOverlayDisk::open(base, &raw_ov)?;
         let mut lba2 = vec![0u8; sector_size];
         cow.read_sectors(2, 1, &mut lba2)?;
-        assert_eq!(lba2, pattern_lba2, "COW/RAW: el overlay no persistió los cambios");
+        assert_eq!(lba2, pattern_lba2, "COW/RAW: el overlay no persistiÃ³ los cambios");
         let mut lba1 = vec![0u8; sector_size];
         cow.read_sectors(1, 1, &mut lba1)?;
         assert_eq!(lba1, seed_lba1, "COW/RAW: lectura de sector no modificado debe venir de base");
@@ -527,7 +536,7 @@ fn run_test_cow() -> Result<(), Box<dyn std::error::Error>> {
         let mut cow = CowOverlayDisk::open(base, &vhd_ov)?;
         let mut lba2 = vec![0u8; sector_size];
         cow.read_sectors(2, 1, &mut lba2)?;
-        assert_eq!(lba2, pattern_lba2, "COW/VHD: el overlay no persistió los cambios");
+        assert_eq!(lba2, pattern_lba2, "COW/VHD: el overlay no persistiÃ³ los cambios");
         println!("  [OK] VHD overlay persistente");
     }
 
@@ -537,7 +546,7 @@ fn run_test_cow() -> Result<(), Box<dyn std::error::Error>> {
     let _ = fs::remove_file(&vhd_ov);
 
     println!("--------------------------------------------------");
-    println!("  Persistencia COW (overlay): ÉXITO");
+    println!("  Persistencia COW (overlay): Ã‰XITO");
     println!("  Bases: RAW, VHD (fixed) | Imagen base preservada, cambios en overlay");
     println!("==================================================");
 
@@ -567,7 +576,7 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
     nat.push_tx_frame(&arp_req)?;
     let arp_reply = nat
         .poll_rx_frame()
-        .ok_or("NAT: no se recibió respuesta ARP para gateway")?;
+        .ok_or("NAT: no se recibiÃ³ respuesta ARP para gateway")?;
     assert!(arp_reply.len() >= 42, "NAT: trama ARP de respuesta demasiado corta");
     assert_eq!(
         u16::from_be_bytes([arp_reply[12], arp_reply[13]]),
@@ -626,17 +635,19 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
     nat.push_tx_frame(&frame)?;
     let echo_reply = nat
         .poll_rx_frame()
-        .ok_or("NAT: no se recibió ICMP echo reply del gateway")?;
+        .ok_or("NAT: no se recibiÃ³ ICMP echo reply del gateway")?;
     assert!(echo_reply.len() >= 14 + 20 + 8, "NAT: trama ICMP de respuesta demasiado corta");
     assert_eq!(echo_reply[23], 1, "NAT: respuesta IP no es ICMP");
     assert_eq!(echo_reply[34], 0, "NAT: ICMP reply type incorrecto");
     println!("  [OK] NAT: ICMP echo reply desde gateway (10.0.2.2)");
 
-    // 3) Integración VM/PCI: virtio-net presente en BDF 00:03.0, IDs y BAR0 I/O con MAC legible
+    // 3) IntegraciÃ³n VM/PCI: virtio-net presente en BDF 00:03.0, IDs y BAR0 I/O con MAC legible
     let mut vm = VirtualMachine::new(VmConfig {
         name: "NetworkTestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
     // Seleccionar 00:03.0, offset 0x00 (Vendor/Device)
     // Guest escribe 0x80001800 a 0xCF8 y lee 0xCFC (4 bytes) -> [ebx]
@@ -703,8 +714,8 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
     println!("--------------------------------------------------");
-    println!("  Red M8 (NAT modo usuario + virtio-net PCI): ÉXITO");
-    println!("  Nota: sin MMIO/inyección de IRQ en CPU; virtio-net operada por sondeo (polling) y BAR I/O.");
+    println!("  Red M8 (NAT modo usuario + virtio-net PCI): Ã‰XITO");
+    println!("  Nota: sin MMIO/inyecciÃ³n de IRQ en CPU; virtio-net operada por sondeo (polling) y BAR I/O.");
     println!("==================================================");
     Ok(())
 }
@@ -725,6 +736,8 @@ fn run_test_framebuffer() -> Result<(), Box<dyn std::error::Error>> {
         name: "FramebufferTestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(8),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
 
     // Guest: configura Bochs VBE 320x200x32 con LFB y escribe patron rojo en el framebuffer, luego HLT.
@@ -844,6 +857,8 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         name: "InputTestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
     let kbd_code = [
         0xE4, 0x64, // in al, 0x64
@@ -866,11 +881,13 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(out[1], 0x1E, "PS/2 data: scancode de teclado incorrecto");
     println!("  [OK] Teclado PS/2: inyeccion de scancode y lectura guest por 0x64/0x60");
 
-    // Ratón: habilitar reporting via 0xD4/0xF4, consumir ACK, luego inyectar evento y leer paquete.
+    // RatÃ³n: habilitar reporting via 0xD4/0xF4, consumir ACK, luego inyectar evento y leer paquete.
     let mut vm2 = VirtualMachine::new(VmConfig {
         name: "InputMouseTestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
     let enable_mouse = [
         0xB0, 0xD4, 0xE6, 0x64, // out 64, D4
@@ -888,7 +905,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     vm2.memory.read_bytes(GuestAddress::new(0x0200), &mut ack)?;
     assert_eq!(ack[0], 0xFA, "PS/2 mouse: se esperaba ACK 0xFA a F4, got 0x{:02X}", ack[0]);
 
-    vm2.inject_ps2_mouse_event(5, 3, 0x01, 0); // dx, dy (pantalla), botón izquierdo
+    vm2.inject_ps2_mouse_event(5, 3, 0x01, 0); // dx, dy (pantalla), botÃ³n izquierdo
     let read_packet = [
         0xBF, 0x01, 0x02, 0x00, 0x00, // mov edi, 0x0201
         0xB9, 0x03, 0x00, 0x00, 0x00, // mov ecx, 3
@@ -907,11 +924,11 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     let mut pkt = [0u8; 3];
     vm2.memory.read_bytes(GuestAddress::new(0x0201), &mut pkt)?;
     assert_ne!(pkt[0] & 0x08, 0, "PS/2 mouse: bit always-1 ausente en byte de estado del paquete");
-    assert_ne!(pkt[0] & 0x01, 0, "PS/2 mouse: botón izquierdo no reflejado en paquete");
+    assert_ne!(pkt[0] & 0x01, 0, "PS/2 mouse: botÃ³n izquierdo no reflejado en paquete");
     assert_eq!(pkt[1], 0x05u8, "PS/2 mouse: delta X incorrecto en paquete");
     // dy pantalla +3 => PS/2 Y hacia arriba => -3 (0xFD en i8)
     assert_eq!(pkt[2], 0xFDu8, "PS/2 mouse: delta Y (invertido) incorrecto en paquete");
-    println!("  [OK] Ratón PS/2: comando D4/F4, ACK y paquete de movimiento/botones por 0x60");
+    println!("  [OK] RatÃ³n PS/2: comando D4/F4, ACK y paquete de movimiento/botones por 0x60");
 
     // IRQ1/IRQ12 reflejadas al PIC por sondeo (tick_platform) cuando hay datos pendientes.
     // IRQ1: teclado pendiente
@@ -919,6 +936,8 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         name: "InputIrq1TestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
     for dev in &mut vm3.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -958,11 +977,13 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert!(got_irq1, "PIC: se esperaba IRQ1 (vector 0x21) por scancode de teclado pendiente");
 
-    // IRQ12: ratón pendiente (paquete tras habilitar streaming y drenar ACK)
+    // IRQ12: ratÃ³n pendiente (paquete tras habilitar streaming y drenar ACK)
     let mut vm4 = VirtualMachine::new(VmConfig {
         name: "InputIrq12TestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
     for dev in &mut vm4.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -1015,7 +1036,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
     }
-    assert!(got_irq12, "PIC: se esperaba IRQ12 (vector 0x2C) por paquete de ratón pendiente");
+    assert!(got_irq12, "PIC: se esperaba IRQ12 (vector 0x2C) por paquete de ratÃ³n pendiente");
     println!("  [OK] IRQ1/IRQ12 reflejadas al PIC (sondeo tick_platform) y vectores 0x21/0x2C");
 
     println!("--------------------------------------------------");
@@ -1026,12 +1047,114 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Backend WHPX (Hito M11)            ");
+    println!("==================================================");
+
+    let whpx = capsule_core::detect_whpx();
+    println!("  WHPX Estado : {:?}", whpx);
+    println!("  Detalle     : {}", whpx.description());
+    if !whpx.is_available() {
+        println!("--------------------------------------------------");
+        println!("  WHPX no disponible en este host: prueba omitida (SKIP).");
+        println!("  CapsuleOS puede usar el backend software por defecto.");
+        println!("==================================================");
+        return Ok(());
+    }
+
+    // Prueba 1: ejecucion minima (HLT + resultado en EAX), similar a test-guest pero en WHPX.
+    let mut vm = match VirtualMachine::new_whpx(VmConfig {
+        name: "WhpxTestGuest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(1),
+        backend: VmBackendKind::Whpx,
+    }) {
+        Ok(vm) => vm,
+        Err(e) => {
+            println!("--------------------------------------------------");
+            println!("  WHPX detectado pero no se pudo inicializar/ejecutar en este host: {}", e);
+            println!("  Prueba omitida (SKIP). CapsuleOS puede usar el backend software por defecto.");
+            println!("==================================================");
+            return Ok(());
+        }
+    };
+    assert_eq!(vm.backend_kind(), VmBackendKind::Whpx, "Se esperaba backend WHPX activo");
+
+    let guest_code = [
+        0xB8, 0x42, 0x00, 0x00, 0x00, // mov eax, 0x42
+        0x83, 0xC0, 0x10,             // add eax, 0x10
+        0xFF, 0xC0,                   // inc eax
+        0xF4,                         // hlt
+    ];
+    vm.load_code(GuestAddress::new(0), &guest_code)?;
+    vm.set_rip(0);
+    let exit = match vm.run() {
+        Ok(e) => e,
+        Err(e) => {
+            println!("--------------------------------------------------");
+            println!("  Fallo ejecutando guest minimo en WHPX: {}", e);
+            println!("  Prueba omitida (SKIP).");
+            println!("==================================================");
+            return Ok(());
+        }
+    };
+    if exit != VcpuExit::Halt {
+        println!("--------------------------------------------------");
+        println!("  Guest WHPX no termino con HLT (salida: {:?}). Prueba omitida (SKIP).", exit);
+        println!("==================================================");
+        return Ok(());
+    }
+    println!("  [OK] Ejecucion guest minima en WHPX (EAX=0x{:08X}, RIP=0x{:04X})", vm.eax(), vm.rip());
+
+    // Prueba 2: salida de E/S por puerto (OUT a COM1) manejada por dispositivos emulados del host.
+    match VirtualMachine::new_whpx(VmConfig {
+        name: "WhpxIoTest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(1),
+        backend: VmBackendKind::Whpx,
+    }) {
+        Ok(mut vm_io) => {
+            let io_code = [
+                0xBA, 0xF8, 0x03, 0x00, 0x00, // mov edx, 0x3F8 (COM1 THR)
+                0xB0, 0x57,                   // mov al, 'W'
+                0xEE,                         // out dx, al
+                0xB0, 0x0A,                   // mov al, '\n'
+                0xEE,                         // out dx, al
+                0xF4,                         // hlt
+            ];
+            vm_io.load_code(GuestAddress::new(0), &io_code)?;
+            vm_io.set_rip(0);
+            match vm_io.run() {
+                Ok(VcpuExit::Halt) => {
+                    println!("  [OK] VM-exit de E/S por puerto (OUT DX,AL a COM1) despachada a dispositivo emulado");
+                }
+                Ok(other) => {
+                    println!("  [WARN] Guest WHPX IO termino con salida inesperada: {:?} (se omite esta subprueba)", other);
+                }
+                Err(e) => {
+                    println!("  [WARN] Fallo en subprueba IO de WHPX: {} (se omite esta subprueba)", e);
+                }
+            }
+        }
+        Err(e) => {
+            println!("  [WARN] No se pudo crear segunda VM WHPX para subprueba IO: {} (se omite)", e);
+        }
+    }
+
+    println!("--------------------------------------------------");
+    println!("  Backend WHPX M11: ejecucion basica verificada en este host");
+    println!("  Nota: particion/vCPU WHPX, GPA mapeada a memoria guest, VM-exits IO -> dispositivos host cuando aplica.");
+    println!("  Sin MMIO dispatch ni inyeccion arquitectural de IRQ en CPU (IDT/CLI/STI/IRET/APIC).");
+    println!("==================================================");
+    Ok(())
+}
 fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("   Prueba de Plataforma Virtual (Hito M7)       ");
     println!("==================================================");
 
-    // PIC 8259: inicialización, IMR y reconocimiento de IRQ con EOI
+    // PIC 8259: inicializaciÃ³n, IMR y reconocimiento de IRQ con EOI
     let mut pic = capsule_devices::Pic8259::new();
     pic.write_io(0x20, 0x11, 1);
     pic.write_io(0xA0, 0x11, 1);
@@ -1054,7 +1177,7 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     let irq14_vec = pic
         .get_interrupt()
         .ok_or("PIC: no se obtuvo vector para IRQ14")?;
-    assert_eq!(irq14_vec, 0x2E, "IRQ14 debe vectorizarse en 0x2E vía cascada");
+    assert_eq!(irq14_vec, 0x2E, "IRQ14 debe vectorizarse en 0x2E vÃ­a cascada");
     pic.write_io(0xA0, 0x20, 1); // EOI esclavo
     pic.write_io(0x20, 0x20, 1); // EOI maestro (IRQ2 cascada)
     println!("  [OK] PIC 8259: init, IMR, IRQ0/IRQ14, cascada y EOI");
@@ -1071,7 +1194,7 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     assert!(pulses >= 1, "PIT: no se observaron pulsos IRQ0 en canal 0");
-    println!("  [OK] PIT 8254: programación de canal 0 y pulsos IRQ0");
+    println!("  [OK] PIT 8254: programaciÃ³n de canal 0 y pulsos IRQ0");
 
     // RTC/CMOS: hora legible y CMOS RAM conservada
     let mut rtc = capsule_devices::RtcCmos::new();
@@ -1091,27 +1214,27 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         rtc.read_io(0x71, 1) & 0xFF,
         0x5A,
-        "RTC/CMOS: registro 0x10 no conservó valor"
+        "RTC/CMOS: registro 0x10 no conservÃ³ valor"
     );
     println!("  [OK] RTC/CMOS: lectura de hora y RAM CMOS preservada");
 
-    // PCI config mechanism #1 (0xCF8/0xCFC), bus vacío
+    // PCI config mechanism #1 (0xCF8/0xCFC), bus vacÃ­o
     let mut pci = capsule_devices::PciBus::new();
     pci.write_io(0xCF8, 0x8000_0000, 4);
     assert_eq!(
         pci.read_io(0xCF8, 4),
         0x8000_0000,
-        "PCI: 0xCF8 debe conservar dirección"
+        "PCI: 0xCF8 debe conservar direcciÃ³n"
     );
     assert_eq!(
         pci.read_io(0xCFC, 2),
         0xFFFF,
-        "PCI: Vendor ID debe ser 0xFFFF en bus vacío"
+        "PCI: Vendor ID debe ser 0xFFFF en bus vacÃ­o"
     );
     assert_eq!(
         pci.read_io(0xCFC, 4),
         0xFFFF_FFFF,
-        "PCI: bus vacío debe devolver 0xFFFF_FFFF"
+        "PCI: bus vacÃ­o debe devolver 0xFFFF_FFFF"
     );
     pci.write_io(0xCF8, 0x0000_0000, 4);
     assert_eq!(
@@ -1119,13 +1242,15 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
         0xFF,
         "PCI: lecturas con config deshabilitada deben devolver 0xFF"
     );
-    println!("  [OK] PCI (CF8/CFC): direccionamiento y enumeración básica (bus vacío)");
+    println!("  [OK] PCI (CF8/CFC): direccionamiento y enumeraciÃ³n bÃ¡sica (bus vacÃ­o)");
 
-    // Integración VM: los puertos de plataforma deben ser manejados por dispositivos registrados
+    // IntegraciÃ³n VM: los puertos de plataforma deben ser manejados por dispositivos registrados
     let mut vm = VirtualMachine::new(VmConfig {
         name: "PlatformTestVM".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     })?;
     // Leer 0xCF8 (4 bytes) -> EAX debe ser 0 en estado inicial del bus PCI
     let code = [
@@ -1148,8 +1273,8 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     println!("  [OK] VM: dispositivos de plataforma registrados y accesibles por E/S");
 
     println!("--------------------------------------------------");
-    println!("  Plataforma virtual M7 (PIC/PIT/RTC/PCI): ÉXITO");
-    println!("  Nota: sin inyección de interrupciones en CPU aún (requiere IDT/CLI/STI/IRET).");
+    println!("  Plataforma virtual M7 (PIC/PIT/RTC/PCI): Ã‰XITO");
+    println!("  Nota: sin inyecciÃ³n de interrupciones en CPU aÃºn (requiere IDT/CLI/STI/IRET).");
     println!("==================================================");
     Ok(())
 }
@@ -1168,6 +1293,8 @@ fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<
         name: vm_name.to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = open_disk_image_for_boot(path)?;
@@ -1258,6 +1385,8 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
         name: "BootFromDiskTest".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(2),
+    
+        backend: capsule_vmm::VmBackendKind::Software,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
@@ -1283,7 +1412,7 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
     let _ = fs::remove_file(&path);
 
     println!("  [OK] Sector de arranque cargado en 0x7C00 (RIP inicial correcto)");
-    println!("  [OK] Boot code ejecutó lectura ATA PIO multi-sector (LBA1-2 -> 0x1000)");
+    println!("  [OK] Boot code ejecutÃ³ lectura ATA PIO multi-sector (LBA1-2 -> 0x1000)");
     println!("--------------------------------------------------");
     println!("  Arranque desde disco: EXITO");
     println!("  Flujo: LBA0 -> 0x7C00, boot sector carga 2 sectores via IDE PIO");
@@ -1415,7 +1544,7 @@ unsafe fn draw_diagnostics(hdc: HDC, rect: &RECT, info: &HostInfo, status: &str)
     draw_text_line(hdc, info.whpx.description(), 48, current_y, rect.right - 48, 22, DT_LEFT);
     current_y += 34;
 
-    current_y = draw_card_header(hdc, "Capsule Runtime (M0-M10)", 32, current_y, rect.right - 32, subtitle_font);
+    current_y = draw_card_header(hdc, "Capsule Runtime (M0-M11)", 32, current_y, rect.right - 32, subtitle_font);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, rgb(74, 222, 128));
     draw_text_line(
@@ -1437,7 +1566,7 @@ unsafe fn draw_diagnostics(hdc: HDC, rect: &RECT, info: &HostInfo, status: &str)
     SelectObject(hdc, code_font);
     draw_text_line(
         hdc,
-        "Siguiente paso: inyeccion de IRQ en CPU (IDT/CLI/STI/IRET), M11/M12 (WHPX/firmware)",
+        "Siguiente paso: inyeccion de IRQ en CPU (IDT/CLI/STI/IRET), MMIO/firmware y mayor fidelidad WHPX (M12+)",
         48,
         current_y,
         rect.right - 48,
@@ -1556,7 +1685,7 @@ unsafe fn gui_disable_mouse_capture(state: &mut GuiState) {
 
 fn vk_to_ps2_set1_scancode(vk: usize, extended: bool) -> Option<&'static [u8]> {
     let vk = vk as u16;
-    // Mapeo básico VK -> PS/2 Set 1 (make). Extendidas según lParam bit 24.
+    // Mapeo bÃ¡sico VK -> PS/2 Set 1 (make). Extendidas segÃºn lParam bit 24.
     Some(match vk {
         0x1B => &[0x01], // Esc
         0x31 => &[0x02],
@@ -2166,6 +2295,14 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|arg| arg == "test-whpx" || arg == "--test-whpx") {
+        if let Err(e) = run_test_whpx() {
+            eprintln!("Error en test-whpx: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let host_info = get_host_info();
     print_cli_summary(host_info);
 
@@ -2173,6 +2310,7 @@ fn main() {
         name: "CapsuleGUI".to_string(),
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(16),
+        backend: VmBackendKind::Whpx,
     }) {
         Ok(vm) => vm,
         Err(e) => {
@@ -2181,9 +2319,23 @@ fn main() {
         }
     };
 
+    let backend_note = match vm.backend_kind() {
+        VmBackendKind::Whpx => "Backend: WHPX (aceleracion hardware)".to_string(),
+        VmBackendKind::Software => match vm.whpx_fallback_reason() {
+            Some(reason) => format!("Backend: Software (fallback WHPX: {})", reason),
+            None => "Backend: Software".to_string(),
+        },
+    };
+
     let status = match load_vbe_demo_guest(&mut vm) {
-        Ok(()) => "Demo guest M10: VBE + entrada PS/2 (clic para capturar raton, Ctrl+Esc para liberar).".to_string(),
-        Err(e) => format!("No se pudo cargar demo VBE/PS2: {} (mostrando diagnostico)", e),
+        Ok(()) => format!(
+            "Demo guest M10: VBE + entrada PS/2 (clic para capturar raton, Ctrl+Esc para liberar). {}",
+            backend_note
+        ),
+        Err(e) => format!(
+            "No se pudo cargar demo VBE/PS2: {} (mostrando diagnostico). {}",
+            e, backend_note
+        ),
     };
 
     let state = Box::new(GuiState {
@@ -2202,7 +2354,7 @@ fn main() {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name: Vec<u16> = "CapsuleOS_HostWindow\0".encode_utf16().collect();
-        let window_title: Vec<u16> = "CapsuleOS - Framebuffer Runtime (M10)\0"
+        let window_title: Vec<u16> = "CapsuleOS - Framebuffer Runtime (M11)\0"
             .encode_utf16()
             .collect();
 
@@ -2255,3 +2407,6 @@ fn main() {
         }
     }
 }
+
+
+

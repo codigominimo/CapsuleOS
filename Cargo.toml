@@ -9,6 +9,7 @@ members = [
     "crates/capsule-storage",
     "crates/capsule-network",
     "crates/capsule-vmm",
+    "crates/capsule-whpx",
     "crates/capsule-gui",
 ]
 default-members = ["crates/capsule-gui"]
@@ -22,4 +23,3 @@ repository = "https://github.com/codigominimo/CapsuleOS"
 
 [workspace.dependencies]
 windows-sys = { version = "0.61.2" }
-

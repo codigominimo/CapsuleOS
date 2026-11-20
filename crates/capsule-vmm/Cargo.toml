@@ -13,4 +13,4 @@ capsule-boot = { path = "../capsule-boot" }
 capsule-devices = { path = "../capsule-devices" }
 capsule-storage = { path = "../capsule-storage" }
 capsule-network = { path = "../capsule-network" }
-
+capsule-whpx = { path = "../capsule-whpx" }
