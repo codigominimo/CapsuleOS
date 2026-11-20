@@ -294,110 +294,149 @@ fn run_test_storage() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn build_ide_pio_guest_code() -> Vec<u8> {
+    // Guest: READ LBA1 -> 0x1000, WRITE LBA2 <- 0x2000, guardar status, FLUSH, HLT
+    let mut code: Vec<u8> = Vec::new();
+    // Select master, LBA
+    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+    // READ SECTORS (count=1, lba=1, cmd=0x20)
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
+    // Read loop: 128 dwords 0x1F0 -> 0x1000
+    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
+    code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=dst
+    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
+    let read_loop = code.len();
+    code.extend_from_slice(&[0xED, 0x89, 0x03, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
+    let rel = (read_loop as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rel as i8 as u8]);
+    // Guardar status tras lectura en 0x0500
+    code.extend_from_slice(&[
+        0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x00, 0x05, 0x00, 0x00, 0x88, 0x03,
+    ]);
+
+    // WRITE SECTORS (count=1, lba=2, cmd=0x30)
+    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x02, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x30, 0xEE]);
+    // Write loop: 128 dwords 0x2000 -> 0x1F0
+    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]);
+    code.extend_from_slice(&[0xBB, 0x00, 0x20, 0x00, 0x00]);
+    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]);
+    let write_loop = code.len();
+    code.extend_from_slice(&[0x8B, 0x03, 0xEF, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
+    let rel = (write_loop as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rel as i8 as u8]);
+    // Guardar status tras escritura en 0x0501 y FLUSH
+    code.extend_from_slice(&[
+        0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x01, 0x05, 0x00, 0x00, 0x88, 0x03,
+    ]);
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0xE7, 0xEE]); // flush
+    code.extend_from_slice(&[
+        0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x02, 0x05, 0x00, 0x00, 0x88, 0x03,
+    ]); // status post-flush
+    code.push(0xF4);
+    code
+}
+
+fn run_ide_guest_on_disk(
+    disk: Box<dyn BlockDevice>,
+    seed_lba1: &[u8],
+    pattern_lba2: &[u8],
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+    let config = VmConfig {
+        name: format!("IdeDiskTest-{label}"),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+    };
+    let mut vm = VirtualMachine::new(config)?;
+    vm.attach_primary_master_disk(disk)?;
+
+    vm.load_code(GuestAddress::new(0x2000), pattern_lba2)?;
+    let code = build_ide_pio_guest_code();
+    vm.load_code(GuestAddress::new(0), &code)?;
+    vm.set_rip(0);
+    let exit = vm.run()?;
+    assert_eq!(exit, VcpuExit::Halt, "Guest debe terminar con HLT ({label})");
+
+    let mut read_buf = vec![0u8; sector_size];
+    vm.memory
+        .read_bytes(GuestAddress::new(0x1000), &mut read_buf)?;
+    assert_eq!(read_buf, seed_lba1, "Lectura guest de LBA1 no coincide ({label})");
+
+    let st_read = vm.memory.read_u8(GuestAddress::new(0x0500))?;
+    let st_write = vm.memory.read_u8(GuestAddress::new(0x0501))?;
+    let st_flush = vm.memory.read_u8(GuestAddress::new(0x0502))?;
+    assert_eq!(st_read & 0x01, 0, "READ SECTORS reportó error ({label}, status=0x{st_read:02X})");
+    assert_eq!(st_write & 0x01, 0, "WRITE SECTORS reportó error ({label}, status=0x{st_write:02X})");
+    assert_eq!(st_flush & 0x01, 0, "FLUSH CACHE reportó error ({label}, status=0x{st_flush:02X})");
+    println!("  [OK] {label}: guest ATA PIO READ/WRITE/FLUSH (status sin errores)");
+    Ok(())
+}
+
 fn run_test_disk() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("   Prueba de Disco ATA/IDE PIO en VM (Hito M5)  ");
     println!("==================================================");
 
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let path = std::env::temp_dir().join(format!("capsuleos_m5_disk_{nanos}.img"));
+    let raw_path = std::env::temp_dir().join(format!("capsuleos_m5_disk_{nanos}.img"));
+    let vhd_path = std::env::temp_dir().join(format!("capsuleos_m5_disk_{nanos}.vhd"));
 
     let sector_size = DEFAULT_SECTOR_SIZE as usize;
-    let seed_lba1: Vec<u8> = (0..sector_size).map(|i| (i as u8).wrapping_mul(5).wrapping_add(0x33)).collect();
-    let pattern_lba2: Vec<u8> = (0..sector_size).map(|i| 0xC3u8 ^ (i as u8).wrapping_mul(3)).collect();
+    let seed_lba1: Vec<u8> = (0..sector_size)
+        .map(|i| (i as u8).wrapping_mul(5).wrapping_add(0x33))
+        .collect();
+    let pattern_lba2: Vec<u8> = (0..sector_size)
+        .map(|i| 0xC3u8 ^ (i as u8).wrapping_mul(3))
+        .collect();
 
+    // RAW
     {
-        let mut disk = RawDiskImage::create(&path, 32, DEFAULT_SECTOR_SIZE)?;
+        let mut disk = RawDiskImage::create(&raw_path, 32, DEFAULT_SECTOR_SIZE)?;
         disk.write_sectors(1, 1, &seed_lba1)?;
         disk.flush()?;
     }
-
     {
-        let config = VmConfig {
-            name: "IdeDiskTest".to_string(),
-            vcpu_count: 1,
-            memory_size: ByteSize::from_mib(2),
-        };
-        let mut vm = VirtualMachine::new(config)?;
-        let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
-        vm.attach_primary_master_disk(Box::new(disk))?;
-
-        // Patrón que el guest escribirá en LBA 2
-        vm.load_code(GuestAddress::new(0x2000), &pattern_lba2)?;
-
-        // Guest: READ LBA1 -> 0x1000, WRITE LBA2 <- 0x2000, guardar status, FLUSH, HLT
-        let mut code: Vec<u8> = Vec::new();
-        // Select master, LBA
-        code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
-        // READ SECTORS (count=1, lba=1, cmd=0x20)
-        code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
-        // Read loop: 128 dwords 0x1F0 -> 0x1000
-        code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // dx=data
-        code.extend_from_slice(&[0xBB, 0x00, 0x10, 0x00, 0x00]); // ebx=dst
-        code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // ecx=128
-        let read_loop = code.len();
-        code.extend_from_slice(&[0xED, 0x89, 0x03, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
-        let rel = (read_loop as i32) - ((code.len() as i32) + 2);
-        code.extend_from_slice(&[0x75, rel as i8 as u8]);
-        // Guardar status tras lectura en 0x0500
-        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x00, 0x05, 0x00, 0x00, 0x88, 0x03]);
-
-        // WRITE SECTORS (count=1, lba=2, cmd=0x30)
-        code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x02, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
-        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x30, 0xEE]);
-        // Write loop: 128 dwords 0x2000 -> 0x1F0
-        code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]);
-        code.extend_from_slice(&[0xBB, 0x00, 0x20, 0x00, 0x00]);
-        code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]);
-        let write_loop = code.len();
-        code.extend_from_slice(&[0x8B, 0x03, 0xEF, 0x83, 0xC3, 0x04, 0xFF, 0xC9]);
-        let rel = (write_loop as i32) - ((code.len() as i32) + 2);
-        code.extend_from_slice(&[0x75, rel as i8 as u8]);
-        // Guardar status tras escritura en 0x0501 y FLUSH
-        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x01, 0x05, 0x00, 0x00, 0x88, 0x03]);
-        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0xE7, 0xEE]); // flush
-        code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC, 0xBB, 0x02, 0x05, 0x00, 0x00, 0x88, 0x03]); // status post-flush
-        code.push(0xF4);
-
-        vm.load_code(GuestAddress::new(0), &code)?;
-        vm.set_rip(0);
-        let exit = vm.run()?;
-        assert_eq!(exit, VcpuExit::Halt, "Guest debe terminar con HLT");
-
-        let mut read_buf = vec![0u8; sector_size];
-        vm.memory.read_bytes(GuestAddress::new(0x1000), &mut read_buf)?;
-        assert_eq!(read_buf, seed_lba1, "Lectura guest de LBA1 no coincide");
-
-        let st_read = vm.memory.read_u8(GuestAddress::new(0x0500))?;
-        let st_write = vm.memory.read_u8(GuestAddress::new(0x0501))?;
-        let st_flush = vm.memory.read_u8(GuestAddress::new(0x0502))?;
-        assert_eq!(st_read & 0x01, 0, "READ SECTORS reportó error (status=0x{st_read:02X})");
-        assert_eq!(st_write & 0x01, 0, "WRITE SECTORS reportó error (status=0x{st_write:02X})");
-        assert_eq!(st_flush & 0x01, 0, "FLUSH CACHE reportó error (status=0x{st_flush:02X})");
-        println!("  [OK] Guest ATA PIO: READ LBA1, WRITE LBA2, FLUSH (status sin errores)");
-    }
-
-    {
-        let mut disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
+        let disk = RawDiskImage::open(&raw_path, DEFAULT_SECTOR_SIZE)?;
+        run_ide_guest_on_disk(Box::new(disk), &seed_lba1, &pattern_lba2, "RAW")?;
+        let mut disk = RawDiskImage::open(&raw_path, DEFAULT_SECTOR_SIZE)?;
         let mut lba2 = vec![0u8; sector_size];
         disk.read_sectors(2, 1, &mut lba2)?;
-        assert_eq!(lba2, pattern_lba2, "LBA2 no persistió tras escritura guest + flush");
-        println!("  [OK] Persistencia RAW verificada tras cierre/reapertura de imagen");
+        assert_eq!(lba2, pattern_lba2, "RAW: LBA2 no persistió tras escritura guest + flush");
+        println!("  [OK] RAW: persistencia verificada tras cierre/reapertura");
     }
 
-    let _ = fs::remove_file(&path);
+    // VHD fixed
+    {
+        let mut disk = VhdFixedDisk::create(&vhd_path, 32, DEFAULT_SECTOR_SIZE)?;
+        disk.write_sectors(1, 1, &seed_lba1)?;
+        disk.flush()?;
+    }
+    {
+        let disk = VhdFixedDisk::open(&vhd_path, DEFAULT_SECTOR_SIZE)?;
+        run_ide_guest_on_disk(Box::new(disk), &seed_lba1, &pattern_lba2, "VHD fixed")?;
+        let mut disk = VhdFixedDisk::open(&vhd_path, DEFAULT_SECTOR_SIZE)?;
+        let mut lba2 = vec![0u8; sector_size];
+        disk.read_sectors(2, 1, &mut lba2)?;
+        assert_eq!(lba2, pattern_lba2, "VHD fixed: LBA2 no persistió tras escritura guest + flush");
+        println!("  [OK] VHD fixed: persistencia verificada tras cierre/reapertura");
+    }
+
+    let _ = fs::remove_file(&raw_path);
+    let _ = fs::remove_file(&vhd_path);
 
     println!("--------------------------------------------------");
     println!("  Disco IDE (ATA PIO) adjunto a VM: ÉXITO");
-    println!("  Operaciones: IDENTIFY implícita por dispositivo, READ/WRITE/FLUSH PIO");
+    println!("  Formatos validados: RAW, VHD (fixed) | READ/WRITE/FLUSH PIO");
     println!("==================================================");
 
     Ok(())
