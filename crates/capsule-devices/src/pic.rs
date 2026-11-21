@@ -207,6 +207,9 @@ impl Pic8259 {
         self.slave.isr
     }
 
+    pub fn master_base(&self) -> u8 { self.master.icw2 }
+    pub fn slave_base(&self) -> u8 { self.slave.icw2 }
+
     pub fn read_io(&mut self, port: u16, _size: u8) -> u32 {
         match port {
             PIC1_CMD => (if self.master.read_isr { self.master.isr } else { self.master.irr }) as u32,

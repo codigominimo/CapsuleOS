@@ -200,6 +200,7 @@ pub struct WhpxPartition {
     partition: Handle,
     vcpu_id: u32,
     mem_size: u64,
+    interrupt_window_requested: bool,
 }
 
 impl fmt::Debug for WhpxPartition {
@@ -241,7 +242,7 @@ impl WhpxPartition {
             let hr = (api.create_vp)(partition, 0, 0);
             if hr != S_OK { let _=(api.unmap_gpa_range)(partition,0,memory.size() as u64); let _=(api.delete_partition)(partition); return Err(WhpxError::CallFailed("WHvCreateVirtualProcessor", hr)); }
 
-            let mut this = Self { api, partition, vcpu_id: 0, mem_size: memory.size() as u64 };
+            let mut this = Self { api, partition, vcpu_id: 0, mem_size: memory.size() as u64, interrupt_window_requested: false };
             if let Err(e) = this.init_basic_state() {
                 let _ = (this.api.delete_vp)(this.partition, 0);
                 let _ = (this.api.unmap_gpa_range)(this.partition, 0, this.mem_size);
@@ -331,9 +332,22 @@ impl WhpxPartition {
             ctrl.type_vector_dest = (vector as u64) << 32; // Type=0 (fixed), Destination=0
             ctrl.destination_mode_flags = 0;
             let hr = req(self.partition, &ctrl, std::mem::size_of::<InterruptControl>() as u32);
-            if hr == S_OK { Ok(true) } else { Err(WhpxError::CallFailed("WHvRequestInterrupt", hr)) }
+            if hr == S_OK {
+                self.interrupt_window_requested = false;
+                Ok(true)
+            } else {
+                Err(WhpxError::CallFailed("WHvRequestInterrupt", hr))
+            }
         }
     }
+
+    /// Minimal interrupt-window request state. WHPX exit reason is surfaced as Interrupted;
+    /// this tracks intent so VM can retry injection on next run. Not full APIC semantics.
+    pub fn request_interrupt_window(&mut self) {
+        self.interrupt_window_requested = true;
+    }
+
+    pub fn interrupt_window_requested(&self) -> bool { self.interrupt_window_requested }
 
     pub fn run(&mut self) -> Result<WhpxRunExit, WhpxError> {
         unsafe {

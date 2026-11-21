@@ -626,6 +626,25 @@ impl VirtualMachine {
         }
         None
     }
+
+    fn requeue_pic_interrupt(&mut self, vector: u8) {
+        // Best-effort: map vector back to legacy PIC IRQ line by base. Lossy/incomplete for remapped PICs.
+        for dev in &mut self.devices {
+            if let Some(pic) = dev.as_any_mut().downcast_mut::<Pic8259>() {
+                let base1 = pic.master_base();
+                let base2 = pic.slave_base();
+                let irq = if vector >= base1 && vector < base1.saturating_add(8) {
+                    Some(vector - base1)
+                } else if vector >= base2 && vector < base2.saturating_add(8) {
+                    Some(8 + (vector - base2))
+                } else {
+                    None
+                };
+                if let Some(irq) = irq { pic.raise_irq(irq); }
+                break;
+            }
+        }
+    }
     fn deliver_pending_interrupt_software(&mut self) -> Result<(), VmmError> {
         if self.backend_kind != VmBackendKind::Software { return Ok(()); }
         // Check IF and PIC
@@ -731,17 +750,24 @@ impl VirtualMachine {
     /// Para WHPX: ejecuta hasta una salida significativa o maneja un IO y retorna None (continuar).
     fn run_whpx_until_exit_or_continue(&mut self) -> Result<Option<VcpuExit>, VmmError> {
         loop {
-            // Best-effort PIC->WHPX interrupt injection. Consume vector only if injected.
+            // Best-effort PIC->WHPX interrupt injection. Consume vector only on success.
             if self.pic_has_pending() {
-                let can_inject = match &mut self.exec { ExecutionBackend::Whpx(p) => p.request_interrupt_supported(), _ => false };
+                let can_inject = match &self.exec { ExecutionBackend::Whpx(p) => p.request_interrupt_supported(), _ => false };
                 if can_inject {
                     if let Some(vec) = self.take_pic_interrupt_vector() {
-                        let injected = match &mut self.exec {
-                            ExecutionBackend::Whpx(p) => p.request_interrupt(vec).map_err(|e| VmmError::VcpuError(e.to_string()))?,
-                            _ => false,
+                        let res = match &mut self.exec {
+                            ExecutionBackend::Whpx(p) => p.request_interrupt(vec),
+                            _ => Ok(false),
                         };
-                        // If injection failed after taking vector, it's lost (PIC already acked). Limitation.
-                        let _ = injected;
+                        match res {
+                            Ok(true) => {}
+                            Ok(false) => { self.requeue_pic_interrupt(vec); }
+                            Err(_) => {
+                                // Injection failed (e.g. IF=0 / window closed). Requeue and request window retry.
+                                self.requeue_pic_interrupt(vec);
+                                if let ExecutionBackend::Whpx(p) = &mut self.exec { p.request_interrupt_window(); }
+                            }
+                        }
                     }
                 }
             }
