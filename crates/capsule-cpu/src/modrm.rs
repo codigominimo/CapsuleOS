@@ -88,7 +88,7 @@ impl OperandLocation {
             let disp = mem.read_u16(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| e.to_string())? as i16 as i64;
             regs.rip += 2; addr = ((addr as i64).wrapping_add(disp) as u64) & 0xFFFF;
         }
-        Ok(OperandLocation::Memory(GuestAddress::new(addr)))
+        Ok(OperandLocation::Memory(GuestAddress::new(seg_base.wrapping_add(addr & 0xFFFF))))
     }
 
     pub fn resolve_rm(
@@ -204,7 +204,7 @@ impl OperandLocation {
                 }
             }
 
-            Ok(OperandLocation::Memory(GuestAddress::new(addr)))
+            Ok(OperandLocation::Memory(GuestAddress::new(seg_base.wrapping_add(addr & 0xFFFF))))
         }
     }
 

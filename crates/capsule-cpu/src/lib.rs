@@ -51,6 +51,7 @@ pub struct SimpleVcpu {
     pub seg_override_base: Option<u64>,
 }
 
+fn update_sub_flags_u8_(flags: &mut u64, a: u8, b: u8, r: u8) { *flags &= !(FLAG_CF|FLAG_PF|FLAG_AF|FLAG_ZF|FLAG_SF|FLAG_OF); if (a as u16) < (b as u16) { *flags |= FLAG_CF; } if r==0 { *flags |= FLAG_ZF; } if (r&0x80)!=0 { *flags |= FLAG_SF; } if ((a^b)&(a^r)&0x80)!=0 { *flags |= FLAG_OF; } if ((a^b^r)&0x10)!=0 { *flags |= FLAG_AF; } if (r.count_ones()%2==0) { *flags |= FLAG_PF; } }
 impl SimpleVcpu {
     pub fn new(id: usize) -> Self {
         Self {
@@ -238,6 +239,49 @@ impl SimpleVcpu {
             0x90 => Ok(None),
 
             // HLT - interruptible when IF enabled
+            // WAIT/FWAIT
+            0x9B => Ok(None),
+            // x87 FPU minimal stub (D8-DF)
+            0xD8..=0xDF => {
+                let modrm_byte = self.fetch_u8(mem)?;
+                let modrm = ModRm::parse(modrm_byte, &rex);
+                let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 });
+                if modrm.mode != 3 { let _rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, &rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?; }
+                Ok(None)
+            }
+
+            // Group 3 F6/F7
+            0xF6 | 0xF7 => {
+                let is8 = opcode==0xF6;
+                let modrm_byte = self.fetch_u8(mem)?;
+                let modrm = ModRm::parse(modrm_byte, &rex);
+                let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 });
+                let rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, &rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?;
+                let op = modrm.reg & 7;
+                if op==0 || op==1 { // TEST imm
+                    let imm = if is8 { self.fetch_u8(mem)? as u64 } else if !is_64bit && (operand_size_16||real_mode) { self.fetch_u16(mem)? as u64 } else { self.fetch_u32(mem)? as u64 };
+                    let v = if is8 { rm_loc.read_u8(&rex, &self.regs, mem)? as u64 } else if !is_64bit && (operand_size_16||real_mode) { rm_loc.read_u16(&self.regs, mem)? as u64 } else { rm_loc.read_val(is_64bit, &self.regs, mem)? };
+                    let res = v & imm; update_logic_flags_u64(&mut self.regs.rflags, res, false); Ok(None)
+                } else if op==2 { // NOT
+                    if is8 { let v=rm_loc.read_u8(&rex,&self.regs,mem)?; rm_loc.write_u8(!v,&rex,&mut self.regs,mem)?; } else if !is_64bit&&(operand_size_16||real_mode){ let v=rm_loc.read_u16(&self.regs,mem)?; rm_loc.write_u16(!v,&mut self.regs,mem)?; } else { let v=rm_loc.read_val(is_64bit,&self.regs,mem)?; rm_loc.write_val(!v,is_64bit,&mut self.regs,mem)?; } Ok(None)
+                } else if op==3 { // NEG
+                    if is8 { let v=rm_loc.read_u8(&rex,&self.regs,mem)?; let r=0u8.wrapping_sub(v); update_sub_flags_u8_(&mut self.regs.rflags,0,v,r); rm_loc.write_u8(r,&rex,&mut self.regs,mem)?; }
+                    else if !is_64bit&&(operand_size_16||real_mode){ let v=rm_loc.read_u16(&self.regs,mem)?; let r=0u16.wrapping_sub(v); update_sub_flags_u16(&mut self.regs.rflags,0,v,r); rm_loc.write_u16(r,&mut self.regs,mem)?; }
+                    else if is_64bit { let v=rm_loc.read_val(true,&self.regs,mem)?; let r=0u64.wrapping_sub(v); update_sub_flags_u64(&mut self.regs.rflags,0,v,r); rm_loc.write_val(r,true,&mut self.regs,mem)?; }
+                    else { let v=rm_loc.read_val(false,&self.regs,mem)? as u32; let r=0u32.wrapping_sub(v); update_sub_flags_u32(&mut self.regs.rflags,0,v,r); rm_loc.write_val(r as u64,false,&mut self.regs,mem)?; } Ok(None)
+                } else if op==4 || op==5 { // MUL/IMUL
+                    if is8 { let a=self.regs.rax as u8 as u64; let b=rm_loc.read_u8(&rex,&self.regs,mem)? as u64; let r=a*b; self.regs.rax=(self.regs.rax&!0xFFFF)| (r&0xFFFF); let c=(r>>8)!=0; if c { self.regs.rflags|=FLAG_CF|FLAG_OF; } else { self.regs.rflags&=!(FLAG_CF|FLAG_OF); } }
+                    else if !is_64bit&&(operand_size_16||real_mode){ let a=self.regs.rax as u16 as u64; let b=rm_loc.read_u16(&self.regs,mem)? as u64; let r=a*b; self.regs.rax=(self.regs.rax&!0xFFFF)|(r&0xFFFF); self.regs.rdx=(self.regs.rdx&!0xFFFF)|((r>>16)&0xFFFF); let c=(r>>16)!=0; if c { self.regs.rflags|=FLAG_CF|FLAG_OF; } else { self.regs.rflags&=!(FLAG_CF|FLAG_OF); } }
+                    else if is_64bit { let a=self.regs.rax; let b=rm_loc.read_val(true,&self.regs,mem)?; let r=(a as u128)*(b as u128); self.regs.rax=r as u64; self.regs.rdx=(r>>64) as u64; let c=self.regs.rdx!=0; if c { self.regs.rflags|=FLAG_CF|FLAG_OF; } else { self.regs.rflags&=!(FLAG_CF|FLAG_OF); } }
+                    else { let a=self.regs.eax() as u64; let b=rm_loc.read_val(false,&self.regs,mem)? as u64; let r=a*b; self.regs.set_reg32(0,r as u32); self.regs.set_reg32(2,(r>>32) as u32); let c=(r>>32)!=0; if c { self.regs.rflags|=FLAG_CF|FLAG_OF; } else { self.regs.rflags&=!(FLAG_CF|FLAG_OF); } } Ok(None)
+                } else { // DIV/IDIV minimal unsigned for now
+                    if is8 { let d=rm_loc.read_u8(&rex,&self.regs,mem)? as u16; if d==0 { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } let a=self.regs.rax as u16; let q=a/d; let r=a%d; if q>0xFF { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } self.regs.rax=(self.regs.rax&!0xFFFF)|((r as u64)<<8)|(q as u64); }
+                    else if !is_64bit&&(operand_size_16||real_mode){ let d=rm_loc.read_u16(&self.regs,mem)? as u32; if d==0 { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } let a=((self.regs.rdx as u32 &0xFFFF)<<16)|(self.regs.rax as u32 &0xFFFF); let q=a/d; let rem=a%d; if q>0xFFFF { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } self.regs.rax=(self.regs.rax&!0xFFFF)|(q as u64); self.regs.rdx=(self.regs.rdx&!0xFFFF)|(rem as u64); }
+                    else if is_64bit { let d=rm_loc.read_val(true,&self.regs,mem)? as u128; if d==0 { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } let a=((self.regs.rdx as u128)<<64)|(self.regs.rax as u128); let q=a/d; let rem=a%d; if q>u64::MAX as u128 { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } self.regs.rax=q as u64; self.regs.rdx=rem as u64; }
+                    else { let d=rm_loc.read_val(false,&self.regs,mem)? as u64; if d==0 { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } let a=((self.regs.rdx as u64 &0xFFFF_FFFF)<<32)|(self.regs.rax as u64 &0xFFFF_FFFF); let q=a/d; let rem=a%d; if q>0xFFFF_FFFF { return Ok(Some(CpuExitReason::Exception{vector:0,error_code:None})); } self.regs.set_reg32(0,q as u32); self.regs.set_reg32(2,rem as u32); } Ok(None)
+                }
+            }
+
             0xF4 => {
                 if self.regs.interrupts_enabled {
                     self.regs.rip = self.regs.rip.wrapping_sub(1); // stay on HLT until interrupt
@@ -513,16 +557,17 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
-            // MOV r/m, imm32 (0xC7 /0)
+            // MOV r/m, imm16/32 (0xC7 /0)
             0xC7 => {
                 let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
                 self.regs.rip += 1;
                 let modrm = ModRm::parse(modrm_byte, &rex);
                 let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 }); let rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, &rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?;
-                let imm32 = mem.read_u32(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
-                self.regs.rip += 4;
-                let val = if is_64bit { imm32 as i32 as i64 as u64 } else { imm32 as u64 };
-                rm_loc.write_val(val, is_64bit, &mut self.regs, mem)?;
+                if (modrm.reg & 7) != 0 { return Ok(Some(CpuExitReason::Exception { vector: 6, error_code: None })); }
+                let size16 = !is_64bit && (operand_size_16 || real_mode);
+                if size16 { let imm = self.fetch_u16(mem)? as u64; rm_loc.write_u16(imm as u16, &mut self.regs, mem)?; }
+                else if is_64bit { let imm = self.fetch_u32(mem)? as i32 as i64 as u64; rm_loc.write_val(imm, true, &mut self.regs, mem)?; }
+                else { let imm = self.fetch_u32(mem)? as u64; rm_loc.write_val(imm, false, &mut self.regs, mem)?; }
                 Ok(None)
             }
 
