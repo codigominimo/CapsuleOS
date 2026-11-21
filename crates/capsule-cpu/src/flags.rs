@@ -139,3 +139,94 @@ pub fn update_logic_flags_u64(rflags: &mut u64, res: u64, is_64bit: bool) {
 
     *rflags = flags;
 }
+
+pub fn update_add_flags_u16(rflags: &mut u64, op1: u16, op2: u16, res: u16) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    if (op1 as u32 + op2 as u32) > 0xFFFF { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((op1 ^ res) & (op2 ^ res) & 0x8000) != 0 { flags |= FLAG_OF; }
+    *rflags = flags;
+}
+pub fn update_sub_flags_u16(rflags: &mut u64, op1: u16, op2: u16, res: u16) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    if op1 < op2 { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((op1 ^ op2) & (op1 ^ res) & 0x8000) != 0 { flags |= FLAG_OF; }
+    *rflags = flags;
+}
+pub fn update_logic_flags_u16(rflags: &mut u64, res: u16) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_OF | FLAG_ZF | FLAG_SF | FLAG_PF);
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    *rflags = flags;
+}
+
+pub fn update_adc_flags_u32(rflags: &mut u64, a: u32, b: u32, cf: u32, res: u32) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    let wide = a as u64 + b as u64 + cf as u64;
+    if wide > 0xFFFF_FFFF { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000_0000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((a ^ res) & (b ^ res) & 0x8000_0000) != 0 { flags |= FLAG_OF; }
+    if ((a ^ b ^ res) & 0x10) != 0 { flags |= FLAG_AF; }
+    *rflags = flags;
+}
+pub fn update_adc_flags_u64(rflags: &mut u64, a: u64, b: u64, cf: u64, res: u64) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    let wide = (a as u128) + (b as u128) + (cf as u128);
+    if wide > u64::MAX as u128 { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000_0000_0000_0000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((a ^ res) & (b ^ res) & 0x8000_0000_0000_0000) != 0 { flags |= FLAG_OF; }
+    if ((a ^ b ^ res) & 0x10) != 0 { flags |= FLAG_AF; }
+    *rflags = flags;
+}
+pub fn update_adc_flags_u16(rflags: &mut u64, a: u16, b: u16, cf: u16, res: u16) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    let wide = a as u32 + b as u32 + cf as u32;
+    if wide > 0xFFFF { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((a ^ res) & (b ^ res) & 0x8000) != 0 { flags |= FLAG_OF; }
+    if ((a ^ b ^ res) & 0x10) != 0 { flags |= FLAG_AF; }
+    *rflags = flags;
+}
+pub fn update_sbb_flags_u32(rflags: &mut u64, a: u32, b: u32, cf: u32, res: u32) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    if (a as u64) < (b as u64 + cf as u64) { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000_0000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((a ^ b) & (a ^ res) & 0x8000_0000) != 0 { flags |= FLAG_OF; }
+    if ((a ^ b ^ res) & 0x10) != 0 { flags |= FLAG_AF; }
+    *rflags = flags;
+}
+pub fn update_sbb_flags_u64(rflags: &mut u64, a: u64, b: u64, cf: u64, res: u64) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    let sub = (b as u128) + (cf as u128);
+    if (a as u128) < sub { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000_0000_0000_0000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((a ^ b) & (a ^ res) & 0x8000_0000_0000_0000) != 0 { flags |= FLAG_OF; }
+    if ((a ^ b ^ res) & 0x10) != 0 { flags |= FLAG_AF; }
+    *rflags = flags;
+}
+pub fn update_sbb_flags_u16(rflags: &mut u64, a: u16, b: u16, cf: u16, res: u16) {
+    let mut flags = *rflags & !(FLAG_CF | FLAG_PF | FLAG_AF | FLAG_ZF | FLAG_SF | FLAG_OF);
+    if (a as u32) < (b as u32 + cf as u32) { flags |= FLAG_CF; }
+    if res == 0 { flags |= FLAG_ZF; }
+    if (res & 0x8000) != 0 { flags |= FLAG_SF; }
+    if calculate_parity((res & 0xFF) as u8) { flags |= FLAG_PF; }
+    if ((a ^ b) & (a ^ res) & 0x8000) != 0 { flags |= FLAG_OF; }
+    if ((a ^ b ^ res) & 0x10) != 0 { flags |= FLAG_AF; }
+    *rflags = flags;
+}

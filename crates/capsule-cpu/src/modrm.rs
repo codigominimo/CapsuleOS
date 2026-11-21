@@ -1,4 +1,4 @@
-﻿//! DecodificaciÃ³n de ModR/M, prefijo REX y modos de direccionamiento de x86-64.
+//! DecodificaciÃ³n de ModR/M, prefijo REX y modos de direccionamiento de x86-64.
 
 use crate::registers::Registers;
 use capsule_core::types::GuestAddress;
@@ -56,26 +56,103 @@ pub enum OperandLocation {
 }
 
 impl OperandLocation {
+    pub fn addr(&self) -> Option<GuestAddress> { match self { OperandLocation::Memory(a) => Some(*a), _ => None } }
+    pub fn resolve_rm_addr16(
+        modrm: &ModRm,
+        regs: &mut Registers,
+        mem: &mut dyn MemoryBus,
+        seg_base: u64,
+    ) -> Result<Self, String> {
+        if modrm.mode == 3 { return Ok(OperandLocation::Register(modrm.rm & 7)); }
+        let rm = modrm.rm & 0x07;
+        let mut addr: u64 = match rm {
+            0 => regs.get_reg16(3) as u64 + regs.get_reg16(6) as u64, // BX+SI
+            1 => regs.get_reg16(3) as u64 + regs.get_reg16(7) as u64, // BX+DI
+            2 => regs.get_reg16(5) as u64 + regs.get_reg16(6) as u64, // BP+SI
+            3 => regs.get_reg16(5) as u64 + regs.get_reg16(7) as u64, // BP+DI
+            4 => regs.get_reg16(6) as u64, // SI
+            5 => regs.get_reg16(7) as u64, // DI
+            6 => if modrm.mode == 0 {
+                let disp = mem.read_u16(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| e.to_string())? as u64;
+                regs.rip += 2;
+                return Ok(OperandLocation::Memory(GuestAddress::new(seg_base.wrapping_add(disp & 0xFFFF))));
+            } else { regs.get_reg16(5) as u64 }, // BP
+            7 => regs.get_reg16(3) as u64, // BX
+            _ => 0,
+        };
+        addr &= 0xFFFF;
+        if modrm.mode == 1 {
+            let disp = mem.read_u8(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| e.to_string())? as i8 as i64;
+            regs.rip += 1; addr = ((addr as i64).wrapping_add(disp) as u64) & 0xFFFF;
+        } else if modrm.mode == 2 {
+            let disp = mem.read_u16(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| e.to_string())? as i16 as i64;
+            regs.rip += 2; addr = ((addr as i64).wrapping_add(disp) as u64) & 0xFFFF;
+        }
+        Ok(OperandLocation::Memory(GuestAddress::new(addr)))
+    }
+
     pub fn resolve_rm(
         modrm: &ModRm,
         rex: &RexPrefix,
         regs: &mut Registers,
         mem: &mut dyn MemoryBus,
     ) -> Result<Self, String> {
+        Self::resolve_rm_with_seg(modrm, rex, regs, mem, regs.real_mode, (regs.ds as u64) << 4)
+    }
+
+    pub fn resolve_rm_with_seg(
+        modrm: &ModRm,
+        rex: &RexPrefix,
+        regs: &mut Registers,
+        mem: &mut dyn MemoryBus,
+        addr16: bool,
+        seg_base: u64,
+    ) -> Result<Self, String> {
+        if addr16 { return Self::resolve_rm_addr16(modrm, regs, mem, seg_base); }
         if modrm.mode == 3 {
             Ok(OperandLocation::Register(modrm.rm))
         } else {
             let mut addr: u64;
 
+            let addr16 = regs.real_mode;
             if (modrm.rm & 0x07) == 5 && modrm.mode == 0 {
-                let disp = mem
-                    .read_u32(GuestAddress::new(regs.rip))
-                    .map_err(|e| format!("Error leyendo disp32 para RIP-relative: {}", e))? as i32 as i64;
-                regs.rip += 4;
-                addr = (regs.rip as i64).wrapping_add(disp) as u64;
+                if !addr16 {
+                    let disp = mem
+                        .read_u32(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip)))
+                        .map_err(|e| format!("Error leyendo disp32 para RIP-relative: {}", e))? as i32 as i64;
+                    regs.rip += 4;
+                    addr = (regs.rip as i64).wrapping_add(disp) as u64;
+                } else {
+                    let disp = mem.read_u16(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| format!("Error leyendo disp16: {}", e))? as u64;
+                    regs.rip += 2;
+                    addr = disp;
+                }
+            } else if addr16 {
+                // 16-bit ModRM addressing (real mode minimal)
+                let rm = modrm.rm & 0x07;
+                let (base, mut disp_len) = match rm {
+                    0 => (regs.get_reg16(3) as u64 + regs.get_reg16(6) as u64, 0usize), // BX+SI
+                    1 => (regs.get_reg16(3) as u64 + regs.get_reg16(7) as u64, 0usize), // BX+DI
+                    2 => (regs.get_reg16(5) as u64 + regs.get_reg16(6) as u64, 0usize), // BP+SI
+                    3 => (regs.get_reg16(5) as u64 + regs.get_reg16(7) as u64, 0usize), // BP+DI
+                    4 => (regs.get_reg16(6) as u64, 0usize), // SI
+                    5 => (regs.get_reg16(7) as u64, 0usize), // DI
+                    6 => (regs.get_reg16(5) as u64, 0usize), // BP (disp16 if mod==0 handled above? mod!=0)
+                    7 => (regs.get_reg16(3) as u64, 0usize), // BX
+                    _ => (0,0),
+                };
+                addr = base & 0xFFFF;
+                if modrm.mode == 1 {
+                    let disp = mem.read_u8(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| format!("Error leyendo disp8: {}", e))? as i8 as i64;
+                    regs.rip += 1; addr = ((addr as i64).wrapping_add(disp) as u64) & 0xFFFF;
+                } else if modrm.mode == 2 {
+                    let disp = mem.read_u16(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip))).map_err(|e| format!("Error leyendo disp16: {}", e))? as i16 as i64;
+                    regs.rip += 2; addr = ((addr as i64).wrapping_add(disp) as u64) & 0xFFFF;
+                }
+                let _ = disp_len;
             } else if (modrm.rm & 0x07) == 4 {
                 let sib = mem
-                    .read_u8(GuestAddress::new(regs.rip))
+                    .read_u8(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip)))
                     .map_err(|e| format!("Error leyendo byte SIB: {}", e))?;
                 regs.rip += 1;
 
@@ -97,13 +174,13 @@ impl OperandLocation {
 
                 if modrm.mode == 1 {
                     let disp = mem
-                        .read_u8(GuestAddress::new(regs.rip))
+                        .read_u8(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip)))
                         .map_err(|e| format!("Error leyendo disp8 en SIB: {}", e))? as i8 as i64;
                     regs.rip += 1;
                     addr = (addr as i64).wrapping_add(disp) as u64;
                 } else if modrm.mode == 2 {
                     let disp = mem
-                        .read_u32(GuestAddress::new(regs.rip))
+                        .read_u32(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip)))
                         .map_err(|e| format!("Error leyendo disp32 en SIB: {}", e))? as i32 as i64;
                     regs.rip += 4;
                     addr = (addr as i64).wrapping_add(disp) as u64;
@@ -114,13 +191,13 @@ impl OperandLocation {
 
                 if modrm.mode == 1 {
                     let disp = mem
-                        .read_u8(GuestAddress::new(regs.rip))
+                        .read_u8(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip)))
                         .map_err(|e| format!("Error leyendo disp8: {}", e))? as i8 as i64;
                     regs.rip += 1;
                     addr = (addr as i64).wrapping_add(disp) as u64;
                 } else if modrm.mode == 2 {
                     let disp = mem
-                        .read_u32(GuestAddress::new(regs.rip))
+                        .read_u32(GuestAddress::new(regs.cs_base.wrapping_add(regs.rip)))
                         .map_err(|e| format!("Error leyendo disp32: {}", e))? as i32 as i64;
                     regs.rip += 4;
                     addr = (addr as i64).wrapping_add(disp) as u64;
@@ -151,6 +228,19 @@ impl OperandLocation {
             OperandLocation::Memory(addr) => {
                 mem.write_u8(addr, val).map_err(|e| format!("Fallo escribiendo u8 en {}: {}", addr, e))
             }
+        }
+    }
+
+    pub fn read_u16(&self, regs: &Registers, mem: &mut dyn MemoryBus) -> Result<u16, String> {
+        match *self {
+            OperandLocation::Register(reg) => Ok(regs.get_reg16(reg)),
+            OperandLocation::Memory(addr) => mem.read_u16(addr).map_err(|e| format!("Fallo leyendo u16 en {}: {}", addr, e)),
+        }
+    }
+    pub fn write_u16(&self, val: u16, regs: &mut Registers, mem: &mut dyn MemoryBus) -> Result<(), String> {
+        match *self {
+            OperandLocation::Register(reg) => { regs.set_reg16(reg, val); Ok(()) }
+            OperandLocation::Memory(addr) => mem.write_bytes(addr, &val.to_le_bytes()).map_err(|e| format!("Fallo escribiendo u16 en {}: {}", addr, e)),
         }
     }
 
