@@ -134,8 +134,11 @@ impl SimpleVcpu {
         let rip_before = self.regs.rip;
         let linear_before = self.linear_ip();
         let real_mode = self.regs.real_mode;
-        let mut operand_size_16 = real_mode;
-        let mut addr_size_16 = real_mode;
+        // Heuristic: CR0.PE set but CS still has real-mode-style base means 16-bit protected segment
+        // (no descriptor cache yet). Flat protected mode uses cs_base=0.
+        let default_16bit = real_mode || (self.regs.cr0 & 1 != 0 && self.regs.cs_base != 0);
+        let mut operand_size_16 = default_16bit;
+        let mut addr_size_16 = default_16bit;
         let mut rex = RexPrefix::default();
         self.seg_override_base = None;
         let mut rep_prefix: u8 = 0; // 0 none, 0xF2 REPNZ, 0xF3 REP/REPZ
@@ -852,7 +855,14 @@ impl SimpleVcpu {
                 };
                 let slo = self.fetch_u8(mem)? as u16; let shi = self.fetch_u8(mem)? as u16; let sel = slo | (shi<<8);
                 self.regs.cs = sel;
-                if self.regs.real_mode { if operand_size_16 { self.regs.cs_base = (sel as u64) << 4; self.regs.rip = off & 0xFFFF; } else { self.regs.cs_base = 0; self.regs.rip = off; } } else { self.regs.cs_base = 0; self.regs.rip = off; }
+                if self.regs.real_mode {
+                    if operand_size_16 { self.regs.cs_base = (sel as u64) << 4; self.regs.rip = off & 0xFFFF; }
+                    else { self.regs.cs_base = 0; self.regs.rip = off; }
+                } else {
+                    // Minimal protected-mode model: treat CS selector value*16 as base when no descriptor cache.
+                    self.regs.cs_base = (sel as u64) << 4;
+                    self.regs.rip = if operand_size_16 { off & 0xFFFF } else { off };
+                }
                 Ok(None)
             }
 
