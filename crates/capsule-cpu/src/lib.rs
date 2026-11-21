@@ -666,7 +666,7 @@ impl SimpleVcpu {
                         else if size16 { let res=(dst_val as u16).wrapping_add(imm as u16); update_add_flags_u16(&mut self.regs.rflags,dst_val as u16,imm as u16,res); rm_loc.write_u16(res,&mut self.regs,mem)?; }
                         else { let res=(dst_val as u32).wrapping_add(imm as u32); update_add_flags_u32(&mut self.regs.rflags,dst_val as u32,imm as u32,res); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; }
                     }
-                    1 => { let res=dst_val|imm; if modrm_byte==0xC9 { eprintln!("[dbg-or] rip={:X} sz16={} dst={:X} imm={:X} res={:X}",self.regs.rip,size16,dst_val,imm,res); } if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } if modrm_byte==0xC9 { eprintln!("[dbg-or2] rcx={:X}",self.regs.rcx); } }
+                    1 => { let res=dst_val|imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
                     4 => { let res=dst_val&imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
                     5 => { // SUB
                         if is_64bit { let res=dst_val.wrapping_sub(imm); update_sub_flags_u64(&mut self.regs.rflags,dst_val,imm,res); rm_loc.write_val(res,true,&mut self.regs,mem)?; }
@@ -855,7 +855,16 @@ impl SimpleVcpu {
                 };
                 let slo = self.fetch_u8(mem)? as u16; let shi = self.fetch_u8(mem)? as u16; let sel = slo | (shi<<8);
                 self.regs.cs = sel;
-                if self.regs.real_mode { self.regs.cs_base = (sel as u64) << 4; self.regs.rip = off & 0xFFFF; } else { self.regs.cs_base = 0; self.regs.rip = off; }
+                if self.regs.real_mode {
+                    if operand_size_16 {
+                        self.regs.cs_base = (sel as u64) << 4;
+                        self.regs.rip = off & 0xFFFF;
+                    } else {
+                        // 32-bit far jump in real mode (e.g. SeaBIOS protected-mode entry): use flat physical offset
+                        self.regs.cs_base = 0;
+                        self.regs.rip = off;
+                    }
+                } else { self.regs.cs_base = 0; self.regs.rip = off; }
                 Ok(None)
             }
 
