@@ -13,10 +13,11 @@ pub trait PciDevice: Send + Any {
     fn handles_io_port(&self, port: u16) -> bool;
     fn io_read(&mut self, port: u16, size: u8) -> u32;
     fn io_write(&mut self, port: u16, data: u32, size: u8);
+    fn handles_mmio(&self, _addr: u64) -> bool { false }
+    fn mmio_read(&mut self, _addr: u64, _size: u8) -> u64 { 0 }
+    fn mmio_write(&mut self, _addr: u64, _data: u64, _size: u8) {}
     fn poll(&mut self, _mem: &mut GuestMemory) {}
-    fn irq_level(&self) -> bool {
-        false
-    }
+    fn irq_level(&self) -> bool { false }
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -80,6 +81,23 @@ impl PciBus {
     pub fn handles_port(&self, port: u16) -> bool {
         matches!(port, 0xCF8..=0xCFB | 0xCFC..=0xCFF)
             || self.devices.iter().any(|d| d.handles_io_port(port))
+    }
+
+    pub fn handles_mmio(&self, addr: u64) -> bool {
+        self.devices.iter().any(|d| d.handles_mmio(addr))
+    }
+
+    pub fn mmio_read(&mut self, addr: u64, size: u8) -> u64 {
+        for dev in &mut self.devices {
+            if dev.handles_mmio(addr) { return dev.mmio_read(addr, size); }
+        }
+        0
+    }
+
+    pub fn mmio_write(&mut self, addr: u64, data: u64, size: u8) {
+        for dev in &mut self.devices {
+            if dev.handles_mmio(addr) { dev.mmio_write(addr, data, size); return; }
+        }
     }
 
     #[inline]

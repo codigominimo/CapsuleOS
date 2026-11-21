@@ -9,7 +9,7 @@ use capsule_boot::{LinuxBootInfo, LinuxKernelLoader};
 use capsule_core::types::GuestAddress;
 use capsule_cpu::{CpuExitReason, Registers, SimpleVcpu};
 use capsule_devices::{
-    BochsVbe, I8042Ps2Controller, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550,
+    BochsVbe, Hpet, I8042Ps2Controller, IdeController, IoApic, LocalApic, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550,
     VirtioNetPci, COM1_BASE,
 };
 use capsule_memory::{GuestMemory, MemoryBus};
@@ -146,6 +146,9 @@ impl VirtualMachine {
         self.add_device(Box::new(RtcCmos::new()));
         self.add_device(Box::new(I8042Ps2Controller::new()));
         self.add_device(Box::new(BochsVbe::new()));
+        self.add_device(Box::new(LocalApic::default()));
+        self.add_device(Box::new(IoApic::default()));
+        self.add_device(Box::new(Hpet::default()));
         let mut pci = PciBus::new();
         pci.attach_device(Box::new(VirtioNetPci::new_default()));
         self.add_device(Box::new(pci));
@@ -606,6 +609,23 @@ impl VirtualMachine {
         false
     }
 
+    fn pic_has_pending(&self) -> bool {
+        for dev in &self.devices {
+            if let Some(pic) = dev.as_any().downcast_ref::<Pic8259>() {
+                return pic.has_pending_interrupt();
+            }
+        }
+        false
+    }
+
+    fn take_pic_interrupt_vector(&mut self) -> Option<u8> {
+        for dev in &mut self.devices {
+            if let Some(pic) = dev.as_any_mut().downcast_mut::<Pic8259>() {
+                return pic.get_interrupt();
+            }
+        }
+        None
+    }
     fn deliver_pending_interrupt_software(&mut self) -> Result<(), VmmError> {
         if self.backend_kind != VmBackendKind::Software { return Ok(()); }
         // Check IF and PIC
@@ -684,6 +704,7 @@ impl VirtualMachine {
                         Ok(Some(VcpuExit::MmioWrite { addr, data, size }))
                     }
                     Ok(Some(CpuExitReason::Interrupt { vector })) => Ok(Some(VcpuExit::Unknown(format!("interrupt 0x{vector:02X}")))),
+                    Ok(Some(CpuExitReason::Exception { vector, error_code })) => Ok(Some(VcpuExit::Unknown(format!("exception 0x{vector:02X} err={error_code:?}")))),
                     Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
                         let rip = self.rip();
                         self.status = VmStatus::Error;
@@ -702,6 +723,20 @@ impl VirtualMachine {
     /// Para WHPX: ejecuta hasta una salida significativa o maneja un IO y retorna None (continuar).
     fn run_whpx_until_exit_or_continue(&mut self) -> Result<Option<VcpuExit>, VmmError> {
         loop {
+            // Best-effort PIC->WHPX interrupt injection. Consume vector only if injected.
+            if self.pic_has_pending() {
+                let can_inject = match &mut self.exec { ExecutionBackend::Whpx(p) => p.request_interrupt_supported(), _ => false };
+                if can_inject {
+                    if let Some(vec) = self.take_pic_interrupt_vector() {
+                        let injected = match &mut self.exec {
+                            ExecutionBackend::Whpx(p) => p.request_interrupt(vec).map_err(|e| VmmError::VcpuError(e.to_string()))?,
+                            _ => false,
+                        };
+                        // If injection failed after taking vector, it's lost (PIC already acked). Limitation.
+                        let _ = injected;
+                    }
+                }
+            }
             let mut whpx_exit = match &mut self.exec {
                 ExecutionBackend::Whpx(p) => p.run().map_err(|e| VmmError::VcpuError(e.to_string()))?,
                 _ => return Err(VmmError::Unsupported),
@@ -1102,6 +1137,9 @@ fn whpx_to_regs(r: WhpxRegs) -> Registers {
         r12: r.r12, r13: r.r13, r14: r.r14, r15: r.r15,
         rip: r.rip, rflags: r.rflags,
         idtr: Default::default(),
+        gdtr: Default::default(),
+        ldtr: 0, tr: 0,
+        cr0: 0, cr2: 0, cr3: 0, cr4: 0, efer: 0,
         interrupts_enabled: (r.rflags & 0x200) != 0,
     }
 }

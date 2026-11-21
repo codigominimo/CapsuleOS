@@ -23,6 +23,7 @@ pub enum CpuExitReason {
     MmioRead { addr: u64, size: u8 },
     MmioWrite { addr: u64, data: u64, size: u8 },
     Interrupt { vector: u8 },
+    Exception { vector: u8, error_code: Option<u32> },
     InvalidOpcode(u8),
     MemoryFault(String),
 }
@@ -36,6 +37,7 @@ impl fmt::Display for CpuExitReason {
             CpuExitReason::MmioRead { addr, size } => write!(f, "MMIO Read 0x{addr:016X} ({size} bytes)"),
             CpuExitReason::MmioWrite { addr, data, size } => write!(f, "MMIO Write 0x{addr:016X} <- 0x{data:X} ({size} bytes)"),
             CpuExitReason::Interrupt { vector } => write!(f, "Interrupt vector 0x{vector:02X}"),
+            CpuExitReason::Exception { vector, error_code } => write!(f, "Exception 0x{vector:02X} err={error_code:?}"),
             CpuExitReason::InvalidOpcode(op) => write!(f, "Opcode no v?lido: 0x{:02X}", op),
             CpuExitReason::MemoryFault(msg) => write!(f, "Fallo de memoria: {}", msg),
         }
@@ -746,13 +748,20 @@ impl SimpleVcpu {
                     _ => Ok(None), // other 0F 01 subops ignored
                 }
             }
-            // MOV r32/64, CRn (0F 20) / MOV CRn, r32/64 (0F 22) - minimal CR0/CR3 stubs
+            // MOV r32/64, CRn (0F 20) / MOV CRn, r32/64 (0F 22) - minimal
             0x20 | 0x22 => {
                 let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
                 self.regs.rip += 1;
                 let modrm = ModRm::parse(modrm_byte, rex);
-                // ignore control regs in this minimal model
-                let _ = (op2, modrm, is_64bit);
+                let cr = modrm.reg & 0x07;
+                let rm = modrm.rm | if rex.b { 8 } else { 0 };
+                if op2 == 0x20 {
+                    let val = match cr { 0 => self.regs.cr0, 2 => self.regs.cr2, 3 => self.regs.cr3, 4 => self.regs.cr4, _ => 0 };
+                    self.regs.set_reg64(rm, val);
+                } else {
+                    let val = self.regs.get_reg64(rm);
+                    match cr { 0 => self.regs.cr0 = val, 2 => self.regs.cr2 = val, 3 => self.regs.cr3 = val, 4 => self.regs.cr4 = val, _ => {} }
+                }
                 Ok(None)
             }
             // WRMSR/RDMSR minimal no-op/fault-safe stubs

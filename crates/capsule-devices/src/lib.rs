@@ -3,6 +3,8 @@
 //! Emulación de dispositivos periféricos y buses de la plataforma de PC
 //! (UART 16550, ATA/IDE PIO, PIC 8259, PIT 8254, RTC/CMOS, bus PCI, virtio-net, VGA/Bochs VBE).
 
+pub mod apic;
+pub mod hpet;
 pub mod ide;
 pub mod pci;
 pub mod pic;
@@ -12,6 +14,8 @@ pub mod uart16550;
 pub mod vga;
 pub mod virtio_net;
 
+pub use apic::{IoApic, LocalApic};
+pub use hpet::Hpet;
 pub use ide::{
     IdeController, PRIMARY_CTRL, PRIMARY_IO_BASE, PRIMARY_IO_END, SECONDARY_CTRL, SECONDARY_IO_BASE,
     SECONDARY_IO_END,

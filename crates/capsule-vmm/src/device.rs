@@ -1,6 +1,6 @@
 //! Abstracción de dispositivos virtuales (I/O ports).
 
-use capsule_devices::{BochsVbe, I8042Ps2Controller, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
+use capsule_devices::{BochsVbe, Hpet, I8042Ps2Controller, IdeController, IoApic, LocalApic, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550};
 use std::any::Any;
 
 pub trait VirtualDevice: Send + Any {
@@ -167,29 +167,15 @@ impl VirtualDevice for RtcCmos {
 /// El sondeo de dispositivos PCI con acceso a memoria guest (p.ej. virtio-net/NAT) se realiza
 /// explícitamente desde el bucle de la VM (`PciBus::poll_devices`), ya que requiere `GuestMemory`.
 impl VirtualDevice for PciBus {
-    fn name(&self) -> &str {
-        "PCI_BUS"
-    }
-
-    fn handles_port(&self, port: u16) -> bool {
-        PciBus::handles_port(self, port)
-    }
-
-    fn read_io(&mut self, port: u16, size: u8) -> u32 {
-        PciBus::read_io(self, port, size)
-    }
-
-    fn write_io(&mut self, port: u16, data: u32, size: u8) {
-        PciBus::write_io(self, port, data, size);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
+    fn name(&self) -> &str { "PCI_BUS" }
+    fn handles_port(&self, port: u16) -> bool { PciBus::handles_port(self, port) }
+    fn read_io(&mut self, port: u16, size: u8) -> u32 { PciBus::read_io(self, port, size) }
+    fn write_io(&mut self, port: u16, data: u32, size: u8) { PciBus::write_io(self, port, data, size); }
+    fn handles_mmio(&self, addr: u64) -> bool { PciBus::handles_mmio(self, addr) }
+    fn read_mmio(&mut self, addr: u64, size: u8) -> u64 { PciBus::mmio_read(self, addr, size) }
+    fn write_mmio(&mut self, addr: u64, data: u64, size: u8) { PciBus::mmio_write(self, addr, data, size); }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 
@@ -223,29 +209,49 @@ impl VirtualDevice for BochsVbe {
 
 /// Implementacion del trait VirtualDevice para el controlador PS/2 i8042 (teclado/raton, 0x60/0x64).
 impl VirtualDevice for I8042Ps2Controller {
-    fn name(&self) -> &str {
-        "I8042_PS2"
-    }
+    fn name(&self) -> &str { "I8042_PS2" }
+    fn handles_port(&self, port: u16) -> bool { I8042Ps2Controller::handles_port(self, port) }
+    fn read_io(&mut self, port: u16, size: u8) -> u32 { I8042Ps2Controller::read_io(self, port, size) }
+    fn write_io(&mut self, port: u16, data: u32, size: u8) { I8042Ps2Controller::write_io(self, port, data, size); }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+}
 
-    fn handles_port(&self, port: u16) -> bool {
-        I8042Ps2Controller::handles_port(self, port)
-    }
+impl VirtualDevice for LocalApic {
+    fn name(&self) -> &str { "LAPIC" }
+    fn handles_port(&self, _port: u16) -> bool { false }
+    fn read_io(&mut self, _port: u16, _size: u8) -> u32 { 0 }
+    fn write_io(&mut self, _port: u16, _data: u32, _size: u8) {}
+    fn handles_mmio(&self, addr: u64) -> bool { LocalApic::handles_mmio(self, addr) }
+    fn read_mmio(&mut self, addr: u64, size: u8) -> u64 { LocalApic::read_mmio(self, addr, size) }
+    fn write_mmio(&mut self, addr: u64, data: u64, size: u8) { LocalApic::write_mmio(self, addr, data, size); }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+}
 
-    fn read_io(&mut self, port: u16, size: u8) -> u32 {
-        I8042Ps2Controller::read_io(self, port, size)
-    }
+impl VirtualDevice for IoApic {
+    fn name(&self) -> &str { "IOAPIC" }
+    fn handles_port(&self, _port: u16) -> bool { false }
+    fn read_io(&mut self, _port: u16, _size: u8) -> u32 { 0 }
+    fn write_io(&mut self, _port: u16, _data: u32, _size: u8) {}
+    fn handles_mmio(&self, addr: u64) -> bool { IoApic::handles_mmio(self, addr) }
+    fn read_mmio(&mut self, addr: u64, size: u8) -> u64 { IoApic::read_mmio(self, addr, size) }
+    fn write_mmio(&mut self, addr: u64, data: u64, size: u8) { IoApic::write_mmio(self, addr, data, size); }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+}
 
-    fn write_io(&mut self, port: u16, data: u32, size: u8) {
-        I8042Ps2Controller::write_io(self, port, data, size);
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
+impl VirtualDevice for Hpet {
+    fn name(&self) -> &str { "HPET" }
+    fn handles_port(&self, _port: u16) -> bool { false }
+    fn read_io(&mut self, _port: u16, _size: u8) -> u32 { 0 }
+    fn write_io(&mut self, _port: u16, _data: u32, _size: u8) {}
+    fn handles_mmio(&self, addr: u64) -> bool { Hpet::handles_mmio(self, addr) }
+    fn read_mmio(&mut self, addr: u64, size: u8) -> u64 { Hpet::read_mmio(self, addr, size) }
+    fn write_mmio(&mut self, addr: u64, data: u64, size: u8) { Hpet::write_mmio(self, addr, data, size); }
+    fn tick(&mut self, cycles: u64) { Hpet::tick(self, cycles); }
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 /// Dispositivo básico de consola / puerto de depuración en puerto simple (ej. puerto 0xE9).
 pub struct DebugConsoleDevice {

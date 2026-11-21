@@ -30,6 +30,14 @@ pub struct Registers {
     pub rip: u64,
     pub rflags: u64,
     pub idtr: Idtr,
+    pub gdtr: Idtr,
+    pub ldtr: u16,
+    pub tr: u16,
+    pub cr0: u64,
+    pub cr2: u64,
+    pub cr3: u64,
+    pub cr4: u64,
+    pub efer: u64,
     pub interrupts_enabled: bool, // IF logical model for software backend
 }
 
@@ -38,6 +46,14 @@ impl Registers {
         Self {
             rflags: FLAG_RESERVED,
             idtr: Idtr::default(),
+            gdtr: Idtr::default(),
+            ldtr: 0,
+            tr: 0,
+            cr0: 0,
+            cr2: 0,
+            cr3: 0,
+            cr4: 0,
+            efer: 0,
             interrupts_enabled: false,
             ..Default::default()
         }

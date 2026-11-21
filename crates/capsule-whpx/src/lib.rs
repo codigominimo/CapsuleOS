@@ -122,6 +122,16 @@ struct MemAccessCtx {
     _gva: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct InterruptControl {
+    // WHV_INTERRUPT_CONTROL - simplified as u64 bitfield for common layout
+    // Type: bits 0-7, DestinationMode:8-9, TriggerMode:10, Reserved:11, Destination:32 bits at 32, Vector:32 at 64, Reserved
+    // In Windows headers this is a UINT64 bitfield; we'll model as two u64s in the common 16-byte form.
+    type_vector_dest: u64,
+    destination_mode_flags: u64,
+}
+
 struct Api {
     _lib: windows_sys::Win32::Foundation::HMODULE,
     create_partition: unsafe extern "system" fn(*mut Handle) -> Hresult,
@@ -135,6 +145,7 @@ struct Api {
     run_vp: unsafe extern "system" fn(Handle, u32, *mut c_void, u32) -> Hresult,
     get_regs: unsafe extern "system" fn(Handle, u32, *const u32, u32, *mut RegVal) -> Hresult,
     set_regs: unsafe extern "system" fn(Handle, u32, *const u32, u32, *const RegVal) -> Hresult,
+    request_interrupt: Option<unsafe extern "system" fn(Handle, *const InterruptControl, u32) -> Hresult>,
 }
 
 impl Api {
@@ -163,6 +174,10 @@ impl Api {
             run_vp: gp(lib, b"WHvRunVirtualProcessor\0")?,
             get_regs: gp(lib, b"WHvGetVirtualProcessorRegisters\0")?,
             set_regs: gp(lib, b"WHvSetVirtualProcessorRegisters\0")?,
+            request_interrupt: {
+                let p = GetProcAddress(lib, b"WHvRequestInterrupt\0".as_ptr());
+                p.map(|f| std::mem::transmute_copy::<_, unsafe extern "system" fn(Handle, *const InterruptControl, u32) -> Hresult>(&f))
+            },
         })
     }
 }
@@ -289,6 +304,22 @@ impl WhpxPartition {
         let mut r = self.get_regs()?;
         r.rip = r.rip.wrapping_add(delta);
         self.set_regs(&r)
+    }
+
+    pub fn request_interrupt_supported(&self) -> bool { self.api.request_interrupt.is_some() }
+
+    /// Best-effort interrupt injection for WHPX. Returns Ok(true) if API exists and call succeeded.
+    /// This is a minimal slice: fixed interrupt to VP 0. Not full APIC/IOAPIC semantics.
+    pub fn request_interrupt(&mut self, vector: u8) -> Result<bool, WhpxError> {
+        let Some(req) = self.api.request_interrupt else { return Ok(false); };
+        unsafe {
+            // WHV_INTERRUPT_CONTROL: Type (Fixed=0) in low bits, Vector at bits 32..39 in common layout.
+            let mut ctrl = InterruptControl::default();
+            ctrl.type_vector_dest = (vector as u64) << 32; // Type=0 (fixed), Destination=0
+            ctrl.destination_mode_flags = 0;
+            let hr = req(self.partition, &ctrl, std::mem::size_of::<InterruptControl>() as u32);
+            if hr == S_OK { Ok(true) } else { Err(WhpxError::CallFailed("WHvRequestInterrupt", hr)) }
+        }
     }
 
     pub fn run(&mut self) -> Result<WhpxRunExit, WhpxError> {
