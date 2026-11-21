@@ -132,6 +132,19 @@ struct InterruptControl {
     destination_mode_flags: u64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ExceptionCtx {
+    instruction_byte_count: u8,
+    _rsv: [u8; 3],
+    _instr: [u8; 16],
+    _exception_type: u32,
+    error_code_valid: u8,
+    _rsv2: [u8; 3],
+    error_code: u32,
+    _exception_parameter: u64,
+}
+
 struct Api {
     _lib: windows_sys::Win32::Foundation::HMODULE,
     create_partition: unsafe extern "system" fn(*mut Handle) -> Hresult,
@@ -367,7 +380,19 @@ impl WhpxPartition {
                 WHV_RUN_VP_EXIT_REASON_X64_INTERRUPT_WINDOW => WhpxRunExit::Interrupted,
                 WHV_RUN_VP_EXIT_REASON_UNSUPPORTED_FEATURE => WhpxRunExit::Unsupported("unsupported feature".into()),
                 WHV_RUN_VP_EXIT_REASON_INVALID_VP_REGISTER_VALUE => WhpxRunExit::Unsupported("invalid vp register value".into()),
-                WHV_RUN_VP_EXIT_REASON_EXCEPTION => WhpxRunExit::Unsupported(format!("exception (0x{reason:08X})")),
+                WHV_RUN_VP_EXIT_REASON_EXCEPTION => {
+                    let mut info = "exception".to_string();
+                    for off in [40usize, 48, 56, 64, 72, 80, 96, 128, 136, 144, 152, 160] {
+                        if off + std::mem::size_of::<ExceptionCtx>() > buf.len() { continue; }
+                        let ex = &*(buf.as_ptr().add(off) as *const ExceptionCtx);
+                        if ex.instruction_byte_count <= 15 {
+                            let err = if ex.error_code_valid != 0 { Some(ex.error_code) } else { None };
+                            info = format!("exception type={} err={err:?} instr_len={}", ex._exception_type, ex.instruction_byte_count);
+                            break;
+                        }
+                    }
+                    WhpxRunExit::Unsupported(info)
+                }
                 WHV_RUN_VP_EXIT_REASON_UNRECOVERABLE_EXCEPTION => WhpxRunExit::Failed("unrecoverable exception".into()),
                 other => WhpxRunExit::Unsupported(format!("exit reason 0x{other:08X}")),
             })

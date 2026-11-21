@@ -172,8 +172,8 @@ impl SimpleVcpu {
             }
 
             // CLI/STI
-            0xFA => { self.regs.interrupts_enabled = false; Ok(None) }
-            0xFB => { self.regs.interrupts_enabled = true; Ok(None) }
+            0xFA => { self.regs.interrupts_enabled = false; self.regs.rflags &= !FLAG_IF; Ok(None) }
+            0xFB => { self.regs.interrupts_enabled = true; self.regs.rflags |= FLAG_IF; Ok(None) }
             // CLD/STD (DF not modeled; NOP compat)
             0xFC | 0xFD => Ok(None),
 
@@ -702,7 +702,7 @@ impl SimpleVcpu {
                 }
             }
 
-            other => Ok(Some(CpuExitReason::InvalidOpcode(other))),
+            other => Ok(Some(CpuExitReason::Exception { vector: 6, error_code: None /* #UD */ })),
         }
     }
 }
@@ -764,8 +764,28 @@ impl SimpleVcpu {
                 }
                 Ok(None)
             }
-            // WRMSR/RDMSR minimal no-op/fault-safe stubs
-            0x30 | 0x32 => Ok(None),
+            // WRMSR/RDMSR minimal stubs (EFER/IA32_APIC_BASE/FS_BASE/GS_BASE/KERNEL_GS_BASE/STAR/LSTAR/CSTAR/SFMASK)
+            0x30 => { // WRMSR
+                let ecx = self.regs.ecx();
+                let val = ((self.regs.edx() as u64) << 32) | (self.regs.eax() as u64);
+                match ecx {
+                    0xC000_0080 => self.regs.efer = val, // EFER
+                    0x001B => { /* IA32_APIC_BASE - ignored here, handled by device model in future */ }
+                    _ => {}
+                }
+                Ok(None)
+            }
+            0x32 => { // RDMSR
+                let ecx = self.regs.ecx();
+                let val = match ecx {
+                    0xC000_0080 => self.regs.efer,
+                    0x001B => 0xFEE0_0900, // IA32_APIC_BASE default-ish stub (enabled,bsp,base)
+                    _ => 0,
+                };
+                self.regs.set_eax(val as u32);
+                self.regs.set_edx((val >> 32) as u32);
+                Ok(None)
+            }
             _ => Ok(Some(CpuExitReason::InvalidOpcode(0x0F))),
         }
     }
@@ -781,33 +801,40 @@ impl SimpleVcpu {
     }
 
     fn deliver_interrupt(&mut self, vector: u8, mem: &mut dyn MemoryBus, _software: bool) -> Result<(), String> {
+        self.deliver_exception(vector, None, mem)
+    }
+
+    pub fn deliver_exception(&mut self, vector: u8, error_code: Option<u32>, mem: &mut dyn MemoryBus) -> Result<(), String> {
         let base = self.regs.idtr.base;
         let limit = self.regs.idtr.limit as u64;
         let off = (vector as u64) * 16;
         if base == 0 || off + 16 > limit.saturating_add(1) {
-            // No IDT configured: emulate as immediate halt for deterministic test/firmware stubs
-            self.regs.rip = self.regs.rip; // no-op
-            return Err(format!("IDT not configured for vector 0x{vector:02X}"));
+            return Err(format!("IDT not configured for vector 0x{vector:02X} err={error_code:?}"));
         }
         let entry_addr = GuestAddress::new(base + off);
         let mut entry = [0u8; 16];
         mem.read_bytes(entry_addr, &mut entry).map_err(|e| e.to_string())?;
         let off_lo = u16::from_le_bytes([entry[0], entry[1]]) as u64;
         let selector = u16::from_le_bytes([entry[2], entry[3]]) as u64;
-        let _ist_type = entry[4];
+        let _ist = entry[4] & 0x7;
         let attr = entry[5];
         let present = (attr & 0x80) != 0;
+        let gate_type = attr & 0x0F;
+        let dpl = (attr >> 5) & 0x3;
+        let _ = (gate_type, dpl); // minimal: no full privilege/gate checks yet
         let off_mid = u16::from_le_bytes([entry[6], entry[7]]) as u64;
         let off_hi = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as u64;
         let handler = off_lo | (off_mid << 16) | (off_hi << 32);
         if !present || handler == 0 {
             return Err(format!("IDT entry not present for vector 0x{vector:02X}"));
         }
-        // push rflags, cs(dummy), rip
-        let rflags = self.regs.rflags | FLAG_IF;
+        let rflags = self.regs.rflags;
         self.push_u64(mem, rflags)?;
-        self.push_u64(mem, selector)?;
+        self.push_u64(mem, selector as u64)?;
         self.push_u64(mem, self.regs.rip)?;
+        if let Some(err) = error_code {
+            self.push_u64(mem, err as u64)?;
+        }
         self.regs.interrupts_enabled = false;
         self.regs.rflags &= !FLAG_IF;
         self.regs.rip = handler;

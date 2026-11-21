@@ -704,7 +704,15 @@ impl VirtualMachine {
                         Ok(Some(VcpuExit::MmioWrite { addr, data, size }))
                     }
                     Ok(Some(CpuExitReason::Interrupt { vector })) => Ok(Some(VcpuExit::Unknown(format!("interrupt 0x{vector:02X}")))),
-                    Ok(Some(CpuExitReason::Exception { vector, error_code })) => Ok(Some(VcpuExit::Unknown(format!("exception 0x{vector:02X} err={error_code:?}")))),
+                    Ok(Some(CpuExitReason::Exception { vector, error_code })) => {
+                        // Software: try to deliver through IDT; if not possible, surface as unknown.
+                        let mut bus = VmBus { mem: &mut self.memory, devices: &mut self.devices };
+                        let delivered = match &mut self.exec {
+                            ExecutionBackend::Software(cpu) => cpu.deliver_exception(vector, error_code, &mut bus).is_ok(),
+                            _ => false,
+                        };
+                        if delivered { Ok(None) } else { Ok(Some(VcpuExit::Unknown(format!("exception 0x{vector:02X} err={error_code:?}")))) }
+                    }
                     Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
                         let rip = self.rip();
                         self.status = VmStatus::Error;
