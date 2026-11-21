@@ -23,7 +23,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | Completado (scope acotado/condicionado) |
 | **M13**| **Ubuntu Minimal / Server** | Slice condicionado: validación de ruta Linux direct boot (kernel/initrd/cmdline) sintética y CLI best-effort para imágenes externas; Ubuntu Server real no declarado soportado | Completado (condicionado/bloqueado) |
 | **M14**| **Ubuntu Desktop (GUI)** | Slice condicionado: validación determinista de plumbing GUI (VBE framebuffer + PS/2 input + Linux direct boot); Ubuntu Desktop/X11/Wayland real no soportado | Completado (condicionado/bloqueado) |
-| **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
+| **M15**| **Capsule Bundle Format** | Formato binario mínimo (magic/version/compression/manifest/payload) con writer/reader y CLI `test-bundle`; compresión real/firma/PE append pendientes | Completado (scope acotado) |
 | **M16**| **Capsule Builder CLI** | Herramienta `capsule build <image>` que genera ejecutables `.exe` | Pendiente |
 | **M17**| **Single-EXE Self-Contained** | Empaquetado final de `ubuntu.exe` sin dependencias de archivos auxiliares | Pendiente |
 | **M18**| **Windows Guest (WinPE / Win10)**| Soporte para invitados Windows (UEFI, GPT, ACPI, controladores virtuales) | Pendiente |
@@ -117,3 +117,10 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - La GUI Win32 existente ya renderiza LFB VBE y traduce eventos teclado/ratón a PS/2 (M9/M10); esto es plumbing, no soporte de desktop Linux real.
 - Validación: `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-linux-gui`, `test-ubuntu-desktop`, regresiones CLI clave y `test-whpx` SKIP seguro.
 - **Bloqueadores para Ubuntu Desktop real**: MMIO, IRQ/APIC/IOAPIC/IDT delivery, CPU x86_64 completa, timers ACPI/HPET/APIC, GPU/virtio-gpu/drm/kms, UEFI/firmware, USB/HID completo, almacenamiento/red/driver stack Linux completo.
+
+### Hito M15 (completado, scope acotado)
+- Crate `capsule-bundle` con formato binario mínimo: magic `CAPSULE\0`, version=1, compression (`None`), manifest length, payload stored length, payload uncompressed length, manifest UTF-8 key=value, payload bytes.
+- `CapsuleManifest` incluye `name`, `guest_os`, `backend`, `memory_mib`, `vcpus`. API: `write_to_file`/`read_from_file`/`from_bytes`, validación de magic/version/compression/truncation.
+- CLI `capsule.exe test-bundle [path]`: genera bundle determinista temporal, hace roundtrip y valida manifest/payload; si se pasa path, lo conserva.
+- Validación: `cargo test -p capsule-bundle`, `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-bundle`, regresiones CLI clave.
+- Limitaciones: sin compresión real (zstd/lz4), sin firma/hash criptográfico, sin streaming por bloques, sin append en PE, sin carga de VM desde bundle, sin metadatos de discos/kernel/initrd/firmware completos.

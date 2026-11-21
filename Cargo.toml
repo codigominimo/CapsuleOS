@@ -10,6 +10,7 @@ members = [
     "crates/capsule-network",
     "crates/capsule-vmm",
     "crates/capsule-whpx",
+    "crates/capsule-bundle",
     "crates/capsule-gui",
 ]
 default-members = ["crates/capsule-gui"]

@@ -21,9 +21,11 @@
 //! - `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: Slice M13 Ubuntu Server condicionado (no soporte Ubuntu real declarado).
 //! - `capsule.exe test-linux-gui [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Linux GUI plumbing: framebuffer+input+boot).
 //! - `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Ubuntu Desktop NO soportado).
+//! - `capsule.exe test-bundle [path]`: Verificacion de Capsule Bundle Format (M15, scope acotado).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
+use capsule_bundle::{CapsuleBundle, CapsuleManifest, PayloadCompression};
 use capsule_core::types::{ByteSize, GuestAddress};
 use capsule_core::{HostInfo, WhpxStatus, CAPSULE_VERSION};
 use capsule_storage::{BlockDevice, CowOverlayDisk, RawDiskImage, VhdFixedDisk, DEFAULT_SECTOR_SIZE};
@@ -1168,6 +1170,48 @@ fn run_test_linux_gui(
         println!("  [WARN] Kernel Linux externo ejecutado best-effort; esto NO valida Ubuntu Desktop/X11/Wayland real.");
     }
     println!("  [INFO] Bloqueadores para Ubuntu Desktop real: MMIO, IRQ/APIC/IDT delivery, CPU x86_64 completa, timers/ACPI/HPET, GPU/virtio-gpu/drivers, UEFI/firmware, USB/HID completo.");
+    Ok(())
+}
+
+fn run_test_bundle(bundle_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Capsule Bundle Format (M15)        ");
+    println!("==================================================");
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let tmp_path = std::env::temp_dir().join(format!("capsuleos_m15_{nanos}.cap"));
+    let path = bundle_path.map(std::path::PathBuf::from).unwrap_or(tmp_path.clone());
+
+    let bundle = CapsuleBundle {
+        manifest: CapsuleManifest {
+            name: "capsule-linux-minimal".to_string(),
+            guest_os: "linux".to_string(),
+            backend: "software".to_string(),
+            memory_mib: 512,
+            vcpus: 1,
+        },
+        payload: b"CAPSULE_PAYLOAD_M15_SYNTHETIC".to_vec(),
+        compression: PayloadCompression::None,
+    };
+    bundle.write_to_file(&path)?;
+    let loaded = CapsuleBundle::read_from_file(&path)?;
+    assert_eq!(loaded.manifest, bundle.manifest);
+    assert_eq!(loaded.payload, bundle.payload);
+    assert_eq!(loaded.compression, PayloadCompression::None);
+    println!("  [OK] Bundle roundtrip: {} ({} bytes payload)", path.display(), loaded.payload.len());
+    println!("  [OK] Manifest: name={} guest_os={} backend={} mem={}MiB vcpus={}",
+        loaded.manifest.name, loaded.manifest.guest_os, loaded.manifest.backend, loaded.manifest.memory_mib, loaded.manifest.vcpus);
+
+    if bundle_path.is_none() {
+        let _ = std::fs::remove_file(&path);
+    } else {
+        println!("  [INFO] Archivo externo conservado: {}", path.display());
+    }
+
+    println!("--------------------------------------------------");
+    println!("  Capsule Bundle M15 (scope acotado): OK");
+    println!("  Nota: sin compresion real, sin firma, sin PE append/Single-EXE, sin carga directa de guest desde bundle.");
+    println!("==================================================");
     Ok(())
 }
 
@@ -2692,6 +2736,15 @@ fn main() {
             std::process::exit(1);
         }
         println!("==================================================");
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-bundle" || arg == "--test-bundle") {
+        let path = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_bundle(path) {
+            eprintln!("Error en test-bundle: {}", e);
+            std::process::exit(1);
+        }
         return;
     }
 

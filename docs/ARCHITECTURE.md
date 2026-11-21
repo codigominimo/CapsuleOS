@@ -146,11 +146,8 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Mantiene la imagen base intacta y almacena las modificaciones en un archivo diferencial/overlay (integrable al bundle/cápsula en hitos posteriores).
 
 * **`capsule-bundle`**:
-  * Especificación y parser del contenedor monolítico Capsule:
-    * `Header`: Identificador mágico `CAPSULE\0`, versión, offsets.
-    * `Manifest`: Configuración de vCPU, RAM, firmware, discos y red.
-    * `Payload`: Firmware, kernel, ramdisk o imagen de disco comprimida (zstd/lz4).
-  * Detección de ejecución como cápsula empaquetada o como herramienta de desarrollo.
+  * M15 (implementado, scope acotado): formato binario mínimo con magic `CAPSULE\0`, version, compression, longitudes, manifest UTF-8 key=value (`name`, `guest_os`, `backend`, `memory_mib`, `vcpus`) y payload. Writer/reader/validación y CLI `test-bundle`.
+  * Pendiente (M16/M17+): compresión real (zstd/lz4), firma/hash, streaming por bloques, append PE/Single-EXE, integración con VM para cargar guest desde bundle, metadatos completos de kernel/initrd/discos/firmware y overlay COW embebido.
 
 ### 2.6. Interfaz de Usuario y CLI
 * **`capsule-gui`**:

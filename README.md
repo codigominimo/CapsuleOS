@@ -167,6 +167,11 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: slice M14 condicionado. **Ubuntu Desktop/X11/Wayland NO declarado soportado** sin caso reproducible validado.
   - Bloqueadores: MMIO, IRQ/APIC/IOAPIC/IDT delivery, CPU x86_64 completa, timers ACPI/HPET/APIC, GPU/virtio-gpu/drm/kms, UEFI/firmware, USB/HID y stack Linux completo.
 
+* [x] **Hito M15 - Capsule Bundle Format** (completado, scope acotado):
+  - Crate `capsule-bundle`: magic `CAPSULE\0`, version 1, compression none, manifest UTF-8 key=value, payload bytes. Roundtrip writer/reader + validación.
+  - `capsule.exe test-bundle [path]`: self-test determinista de creación/lectura/validación.
+  - Limitaciones: sin compresión real, firma, streaming, append PE, ni carga directa de VM desde bundle.
+
 ---
 
 ## Compilación y Uso
@@ -313,6 +318,14 @@ Valida solo mapeo ROM/reset/ejecución mínima determinista. **No** valida OVMF 
 .\target\release\capsule.exe test-ubuntu-desktop .\vmlinuz .\initrd.img "console=ttyS0 video=800x600-32"
 ```
 **No** declara Ubuntu Desktop/X11/Wayland soportado. Valida plumbing GUI existente, no desktop Linux real.
+
+### Verificar Capsule Bundle Format (Hito M15)
+```powershell
+.\target\release\capsule.exe test-bundle
+# Opcional: conservar/validar un path específico
+.\target\release\capsule.exe test-bundle .\mi_capsula.cap
+```
+Valida formato M15 acotado (magic/version/manifest/payload roundtrip). No valida compresión real, firma ni carga de VM desde bundle.
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

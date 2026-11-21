@@ -83,3 +83,7 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **No soportado**: Ubuntu Desktop/X11/Wayland real **no está soportado/validado**. No hay caso reproducible de arranque de desktop Linux real.
 * **Bloqueadores críticos**: todos los de M13 más GPU moderna/virtio-gpu/drm/kms, aceleración/modos gráficos reales, USB/HID completo, temporización/APIC/HPET más precisa, firmware/UEFI, y stack de drivers/userspace Linux completo.
 * **Criterio de soporte futuro**: caso reproducible con imagen Ubuntu Desktop identificada, kernel/initrd/cmdline/firmware/disco, logs serie, captura de pantalla/framebuffer esperado y prueba automatizada.
+
+### 3.7. Capsule Bundle / Builder / Single-EXE (M15-M17, parcial)
+* **M15 implementado (acotado)**: formato `.cap` mínimo con magic/version/manifest/payload y roundtrip CLI (`test-bundle`). Sin compresión real, firma, streaming por bloques, cifrado, ni carga de VM desde bundle.
+* **M16/M17 pendientes**: `capsule build` CLI, append/embebido en PE, extracción/streaming en runtime, mapeo de payload a disco/kernel/initrd, y `.exe` autocontenido final. No declarar Single-EXE/Builder soportado hasta tener caso reproducible validado.
