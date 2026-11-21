@@ -836,6 +836,32 @@ impl SimpleVcpu {
                 self.regs.set_edx((tsc >> 32) as u32);
                 Ok(None)
             }
+            // Jcc rel32 (0F 80..8F)
+            0x80..=0x8F => {
+                let rel32 = mem.read_u32(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i32;
+                self.regs.rip += 4;
+                let cond = match op2 {
+                    0x80 => self.regs.of(),
+                    0x81 => !self.regs.of(),
+                    0x82 => self.regs.cf(),
+                    0x83 => !self.regs.cf(),
+                    0x84 => self.regs.zf(),
+                    0x85 => !self.regs.zf(),
+                    0x86 => self.regs.cf() || self.regs.zf(),
+                    0x87 => !self.regs.cf() && !self.regs.zf(),
+                    0x88 => self.regs.sf(),
+                    0x89 => !self.regs.sf(),
+                    0x8A => self.regs.pf(),
+                    0x8B => !self.regs.pf(),
+                    0x8C => self.regs.sf() != self.regs.of(),
+                    0x8D => self.regs.sf() == self.regs.of(),
+                    0x8E => self.regs.zf() || (self.regs.sf() != self.regs.of()),
+                    0x8F => !self.regs.zf() && (self.regs.sf() == self.regs.of()),
+                    _ => false,
+                };
+                if cond { self.regs.rip = (self.regs.rip as i64).wrapping_add(rel32 as i64) as u64; }
+                Ok(None)
+            }
             _ => Ok(Some(CpuExitReason::InvalidOpcode(0x0F))),
         }
     }
