@@ -142,7 +142,7 @@ impl SimpleVcpu {
         let mut opcode = self.fetch_u8(mem)?;
         if trace {
             let n = TRACE_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n < 2000 { eprintln!("[fwtrace {n:04}] rip=0x{:X} lin=0x{:X} op=0x{:02X} cr0={:X} rsp=0x{:X} cs=0x{:X}", rip_before, linear_before, opcode, self.regs.cr0, self.regs.rsp, self.regs.cs); }
+            if n < 2000 { eprintln!("[fwtrace {n:04}] rip=0x{:X} lin=0x{:X} op=0x{:02X} cr0={:X} rsp=0x{:X} cs=0x{:X} csb=0x{:X}", rip_before, linear_before, opcode, self.regs.cr0, self.regs.rsp, self.regs.cs, self.regs.cs_base); }
         }
         loop {
             match opcode {
@@ -637,7 +637,7 @@ impl SimpleVcpu {
 
             // Grupo 1: ADD, OR, AND, SUB, XOR, CMP con imm32 (0x81) o imm8 (0x83)
             0x81 | 0x83 => {
-                let is_imm8 = opcode == 0x83;
+                let is_imm8 = opcode == 0x83; 
                 let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
                 self.regs.rip += 1;
                 let modrm = ModRm::parse(modrm_byte, &rex);
@@ -666,7 +666,7 @@ impl SimpleVcpu {
                         else if size16 { let res=(dst_val as u16).wrapping_add(imm as u16); update_add_flags_u16(&mut self.regs.rflags,dst_val as u16,imm as u16,res); rm_loc.write_u16(res,&mut self.regs,mem)?; }
                         else { let res=(dst_val as u32).wrapping_add(imm as u32); update_add_flags_u32(&mut self.regs.rflags,dst_val as u32,imm as u32,res); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; }
                     }
-                    1 => { let res=dst_val|imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
+                    1 => { let res=dst_val|imm; if modrm_byte==0xC9 { eprintln!("[dbg-or] rip={:X} sz16={} dst={:X} imm={:X} res={:X}",self.regs.rip,size16,dst_val,imm,res); } if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } if modrm_byte==0xC9 { eprintln!("[dbg-or2] rcx={:X}",self.regs.rcx); } }
                     4 => { let res=dst_val&imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
                     5 => { // SUB
                         if is_64bit { let res=dst_val.wrapping_sub(imm); update_sub_flags_u64(&mut self.regs.rflags,dst_val,imm,res); rm_loc.write_val(res,true,&mut self.regs,mem)?; }
