@@ -22,6 +22,7 @@
 //! - `capsule.exe test-linux-gui [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Linux GUI plumbing: framebuffer+input+boot).
 //! - `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Ubuntu Desktop NO soportado).
 //! - `capsule.exe test-bundle [path]`: Verificacion de Capsule Bundle Format (M15, scope acotado).
+//! - `capsule.exe build <input> [out.exe]` / `test-capsule-build`: Builder CLI y Single-file EXE append (M16/M17, scope acotado).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -1211,6 +1212,63 @@ fn run_test_bundle(bundle_path: Option<&str>) -> Result<(), Box<dyn std::error::
     println!("--------------------------------------------------");
     println!("  Capsule Bundle M15 (scope acotado): OK");
     println!("  Nota: sin compresion real, sin firma, sin PE append/Single-EXE, sin carga directa de guest desde bundle.");
+    println!("==================================================");
+    Ok(())
+}
+
+fn run_test_capsule_build(
+    input: Option<&str>,
+    out: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba Capsule Builder CLI (M16/M17, acotado)");
+    println!("==================================================");
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let temp_dir = std::env::temp_dir();
+    let input_path = if let Some(p) = input {
+        std::path::PathBuf::from(p)
+    } else {
+        let p = temp_dir.join(format!("capsuleos_m16_input_{nanos}.img"));
+        std::fs::write(&p, b"FAKE_DISK_IMAGE_M16")?;
+        p
+    };
+    let out_exe = if let Some(p) = out {
+        std::path::PathBuf::from(p)
+    } else {
+        temp_dir.join(format!("capsuleos_m16_{nanos}.exe"))
+    };
+
+    let payload = std::fs::read(&input_path)?;
+    let bundle = CapsuleBundle {
+        manifest: CapsuleManifest {
+            name: input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("capsule").to_string(),
+            guest_os: "unknown".to_string(),
+            backend: "software".to_string(),
+            memory_mib: 512,
+            vcpus: 1,
+        },
+        payload,
+        compression: PayloadCompression::None,
+    };
+
+    let self_exe = std::env::current_exe()?;
+    CapsuleBundle::append_to_exe(&self_exe, &out_exe, &bundle)?;
+    let loaded = CapsuleBundle::read_from_appended_exe(&out_exe)?
+        .ok_or("no se encontró bundle appendado en EXE generado")?;
+    assert_eq!(loaded.manifest.name, bundle.manifest.name);
+    assert_eq!(loaded.payload, bundle.payload);
+
+    println!("  [OK] Input: {}", input_path.display());
+    println!("  [OK] Single-file EXE generado: {} ({} bytes)", out_exe.display(), std::fs::metadata(&out_exe)?.len());
+    println!("  [OK] Bundle appendado detectado: name={} payload={} bytes", loaded.manifest.name, loaded.payload.len());
+
+    if input.is_none() { let _ = std::fs::remove_file(&input_path); }
+    if out.is_none() { let _ = std::fs::remove_file(&out_exe); }
+
+    println!("--------------------------------------------------");
+    println!("  Capsule Builder M16 / Single-file EXE M17 (scope acotado): OK");
+    println!("  Nota: append al final del EXE con footer; sin compresion, firma, streaming, ni boot real del payload por VM.");
     println!("==================================================");
     Ok(())
 }
@@ -2743,6 +2801,26 @@ fn main() {
         let path = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
         if let Err(e) = run_test_bundle(path) {
             eprintln!("Error en test-bundle: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.get(1).map(|s| s.as_str()) == Some("build") {
+        let input = args.get(2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let out = args.get(3).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_capsule_build(input, out) {
+            eprintln!("Error en capsule build: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-capsule-build" || arg == "--test-capsule-build") {
+        let input = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let out = args.get(pos + 2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_capsule_build(input, out) {
+            eprintln!("Error en test-capsule-build: {}", e);
             std::process::exit(1);
         }
         return;

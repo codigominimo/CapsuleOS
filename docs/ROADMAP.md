@@ -24,8 +24,8 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M13**| **Ubuntu Minimal / Server** | Slice condicionado: validación de ruta Linux direct boot (kernel/initrd/cmdline) sintética y CLI best-effort para imágenes externas; Ubuntu Server real no declarado soportado | Completado (condicionado/bloqueado) |
 | **M14**| **Ubuntu Desktop (GUI)** | Slice condicionado: validación determinista de plumbing GUI (VBE framebuffer + PS/2 input + Linux direct boot); Ubuntu Desktop/X11/Wayland real no soportado | Completado (condicionado/bloqueado) |
 | **M15**| **Capsule Bundle Format** | Formato binario mínimo (magic/version/compression/manifest/payload) con writer/reader y CLI `test-bundle`; compresión real/firma/PE append pendientes | Completado (scope acotado) |
-| **M16**| **Capsule Builder CLI** | Herramienta `capsule build <image>` que genera ejecutables `.exe` | Pendiente |
-| **M17**| **Single-EXE Self-Contained** | Empaquetado final de `ubuntu.exe` sin dependencias de archivos auxiliares | Pendiente |
+| **M16**| **Capsule Builder CLI** | CLI `capsule build <input> [out.exe]` / `test-capsule-build`: empaqueta input en bundle y lo appendea a copia del runtime EXE; sin boot real desde payload | Completado (scope acotado) |
+| **M17**| **Single-EXE Self-Contained** | EXE autocontenido por append+footer (bundle detectado en el propio EXE); sin compresión/firma/streaming/boot de OS real desde payload | Completado (scope acotado) |
 | **M18**| **Windows Guest (WinPE / Win10)**| Soporte para invitados Windows (UEFI, GPT, ACPI, controladores virtuales) | Pendiente |
 | **M19**| **BSD Support (FreeBSD)** | Verificación y soporte de arranque de sistemas FreeBSD | Pendiente |
 | **M20**| **Multi-Architecture Emulation**| Soporte para invitados ARM64 y RISC-V en backend emulador | Pendiente |
@@ -124,3 +124,10 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - CLI `capsule.exe test-bundle [path]`: genera bundle determinista temporal, hace roundtrip y valida manifest/payload; si se pasa path, lo conserva.
 - Validación: `cargo test -p capsule-bundle`, `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-bundle`, regresiones CLI clave.
 - Limitaciones: sin compresión real (zstd/lz4), sin firma/hash criptográfico, sin streaming por bloques, sin append en PE, sin carga de VM desde bundle, sin metadatos de discos/kernel/initrd/firmware completos.
+
+### Hito M16/M17 (completado, scope acotado)
+- `capsule-bundle` añade append/detección en EXE: `append_to_exe`, `read_from_appended_exe`, footer `CAPSLEXE + bundle_len + version + reserved`.
+- CLI `capsule.exe build <input> [out.exe]` y `capsule.exe test-capsule-build [input] [out.exe]`: copia el runtime EXE actual, appendea bundle con payload del input, y valida que el bundle appendado se puede leer desde el EXE generado.
+- Esto produce un artefacto single-file por append (M17 acotado), pero **no** boot real de OS desde payload ni empaquetado seguro/productivo completo.
+- Validación: `cargo test -p capsule-bundle`, `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-capsule-build`, `test-bundle`, `test-whpx` SKIP seguro.
+- Limitaciones: sin compresión, firma/validación criptográfica, streaming, alineación/firmado PE avanzado, manifest completo de boot, selección automática de payload por VM, ni soporte real de Ubuntu/Windows guest desde bundle.

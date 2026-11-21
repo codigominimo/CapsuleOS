@@ -172,6 +172,10 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - `capsule.exe test-bundle [path]`: self-test determinista de creación/lectura/validación.
   - Limitaciones: sin compresión real, firma, streaming, append PE, ni carga directa de VM desde bundle.
 
+* [x] **Hito M16 - Capsule Builder CLI / M17 - Single-EXE Self-Contained** (completado, scope acotado):
+  - `capsule.exe build <input> [out.exe]` o `test-capsule-build [input] [out.exe]`: copia runtime EXE, appendea bundle con payload del input y footer `CAPSLEXE`, y valida lectura.
+  - Produce single-file EXE por append (acotado). **No** soporta boot real de OS desde payload, compresión, firma, streaming, ni empaquetado seguro/productivo completo.
+
 ---
 
 ## Compilación y Uso
@@ -326,6 +330,16 @@ Valida solo mapeo ROM/reset/ejecución mínima determinista. **No** valida OVMF 
 .\target\release\capsule.exe test-bundle .\mi_capsula.cap
 ```
 Valida formato M15 acotado (magic/version/manifest/payload roundtrip). No valida compresión real, firma ni carga de VM desde bundle.
+
+### Verificar Capsule Builder / Single-EXE (Hito M16/M17, acotado)
+```powershell
+# Self-test determinista: genera input sintético, crea EXE con bundle appendado y lo valida
+.\target\release\capsule.exe test-capsule-build
+
+# Build desde un input (payload crudo) a un EXE de salida
+.\target\release\capsule.exe build .\input.img .\mi_capsula.exe
+```
+Valida solo append/detección de bundle en EXE. **No** valida boot real de OS desde payload, compresión, firma, streaming ni packaging productivo.
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

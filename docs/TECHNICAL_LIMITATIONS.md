@@ -84,6 +84,7 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Bloqueadores críticos**: todos los de M13 más GPU moderna/virtio-gpu/drm/kms, aceleración/modos gráficos reales, USB/HID completo, temporización/APIC/HPET más precisa, firmware/UEFI, y stack de drivers/userspace Linux completo.
 * **Criterio de soporte futuro**: caso reproducible con imagen Ubuntu Desktop identificada, kernel/initrd/cmdline/firmware/disco, logs serie, captura de pantalla/framebuffer esperado y prueba automatizada.
 
-### 3.7. Capsule Bundle / Builder / Single-EXE (M15-M17, parcial)
-* **M15 implementado (acotado)**: formato `.cap` mínimo con magic/version/manifest/payload y roundtrip CLI (`test-bundle`). Sin compresión real, firma, streaming por bloques, cifrado, ni carga de VM desde bundle.
-* **M16/M17 pendientes**: `capsule build` CLI, append/embebido en PE, extracción/streaming en runtime, mapeo de payload a disco/kernel/initrd, y `.exe` autocontenido final. No declarar Single-EXE/Builder soportado hasta tener caso reproducible validado.
+### 3.7. Capsule Bundle / Builder / Single-EXE (M15-M17, acotado)
+* **M15 implementado (acotado)**: formato `.cap` mínimo con magic/version/manifest/payload y roundtrip CLI (`test-bundle`).
+* **M16/M17 implementado (acotado)**: `capsule build <input> [out.exe]` / `test-capsule-build` copia el runtime, appendea bundle+footer `CAPSLEXE` y valida lectura. Artefacto single-file por append.
+* **No soportado aún**: boot real de guest desde payload del bundle, compresión real, firma/verificación criptográfica, streaming/chunking, manifiesto boot completo (kernel/initrd/disk/firmware), overlay COW embebido, firmado PE/AV-hardening, carga automática al iniciar el `.exe` generado.

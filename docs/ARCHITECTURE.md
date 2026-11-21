@@ -147,7 +147,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-bundle`**:
   * M15 (implementado, scope acotado): formato binario mínimo con magic `CAPSULE\0`, version, compression, longitudes, manifest UTF-8 key=value (`name`, `guest_os`, `backend`, `memory_mib`, `vcpus`) y payload. Writer/reader/validación y CLI `test-bundle`.
-  * Pendiente (M16/M17+): compresión real (zstd/lz4), firma/hash, streaming por bloques, append PE/Single-EXE, integración con VM para cargar guest desde bundle, metadatos completos de kernel/initrd/discos/firmware y overlay COW embebido.
+  * M16/M17 (acotado): append de bundle a copia de runtime EXE con footer `CAPSLEXE`; CLI `build`/`test-capsule-build` valida roundtrip. Pendiente: compresión real, firma/hash, streaming por bloques, manifiesto boot completo, selección/carga de payload por VM, overlay COW embebido, firmado PE robusto.
 
 ### 2.6. Interfaz de Usuario y CLI
 * **`capsule-gui`**:

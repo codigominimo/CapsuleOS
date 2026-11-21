@@ -4,6 +4,8 @@ use std::path::Path;
 
 pub const MAGIC: &[u8; 8] = b"CAPSULE\0";
 pub const VERSION: u32 = 1;
+pub const EXE_FOOTER_MAGIC: &[u8; 8] = b"CAPSLEXE";
+pub const EXE_FOOTER_LEN: usize = 24; // magic(8) + bundle_len(u64) + version(u32) + reserved(u32)
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -85,20 +87,8 @@ pub struct CapsuleBundle {
 
 impl CapsuleBundle {
     pub fn write_to_file(&self, path: impl AsRef<Path>) -> Result<(), String> {
-        let manifest_bytes = self.manifest.to_bytes();
-        let payload_bytes = match self.compression {
-            PayloadCompression::None => self.payload.clone(),
-        };
         let mut f = File::create(path).map_err(|e| e.to_string())?;
-        f.write_all(MAGIC).map_err(|e| e.to_string())?;
-        f.write_all(&VERSION.to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&(self.compression as u32).to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&(manifest_bytes.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&(payload_bytes.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&(self.payload.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?; // uncompressed len
-        f.write_all(&manifest_bytes).map_err(|e| e.to_string())?;
-        f.write_all(&payload_bytes).map_err(|e| e.to_string())?;
-        Ok(())
+        self.write_to_bytes(&mut f)
     }
 
     pub fn read_from_file(path: impl AsRef<Path>) -> Result<Self, String> {
@@ -125,5 +115,46 @@ impl CapsuleBundle {
             PayloadCompression::None => payload_stored.to_vec(),
         };
         Ok(Self { manifest, payload, compression })
+    }
+
+    pub fn append_to_exe(exe_path: impl AsRef<Path>, out_exe: impl AsRef<Path>, bundle: &Self) -> Result<(), String> {
+        let mut exe = std::fs::read(&exe_path).map_err(|e| e.to_string())?;
+        let mut bundle_bytes = Vec::new();
+        bundle.write_to_bytes(&mut bundle_bytes)?;
+        let bundle_len = bundle_bytes.len() as u64;
+        exe.extend_from_slice(&bundle_bytes);
+        exe.extend_from_slice(EXE_FOOTER_MAGIC);
+        exe.extend_from_slice(&bundle_len.to_le_bytes());
+        exe.extend_from_slice(&VERSION.to_le_bytes());
+        exe.extend_from_slice(&0u32.to_le_bytes());
+        std::fs::write(out_exe, exe).map_err(|e| e.to_string())
+    }
+
+    pub fn read_from_appended_exe(path: impl AsRef<Path>) -> Result<Option<Self>, String> {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        if data.len() < EXE_FOOTER_LEN { return Ok(None); }
+        let foot = &data[data.len() - EXE_FOOTER_LEN..];
+        if &foot[0..8] != EXE_FOOTER_MAGIC { return Ok(None); }
+        let bundle_len = u64::from_le_bytes(foot[8..16].try_into().unwrap()) as usize;
+        let version = u32::from_le_bytes(foot[16..20].try_into().unwrap());
+        if version != VERSION { return Err(format!("unsupported appended bundle version {version}")); }
+        if data.len() < EXE_FOOTER_LEN + bundle_len { return Err("appended bundle truncated".into()); }
+        let start = data.len() - EXE_FOOTER_LEN - bundle_len;
+        let bundle = Self::from_bytes(&data[start..start + bundle_len])?;
+        Ok(Some(bundle))
+    }
+
+    pub fn write_to_bytes<W: Write>(&self, mut w: W) -> Result<(), String> {
+        let manifest_bytes = self.manifest.to_bytes();
+        let payload_bytes = match self.compression { PayloadCompression::None => self.payload.clone() };
+        w.write_all(MAGIC).map_err(|e| e.to_string())?;
+        w.write_all(&VERSION.to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(self.compression as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(manifest_bytes.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(payload_bytes.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(self.payload.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&manifest_bytes).map_err(|e| e.to_string())?;
+        w.write_all(&payload_bytes).map_err(|e| e.to_string())?;
+        Ok(())
     }
 }
