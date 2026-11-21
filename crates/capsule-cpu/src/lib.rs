@@ -770,13 +770,31 @@ impl SimpleVcpu {
                 }
                 Ok(None)
             }
-            // WRMSR/RDMSR minimal stubs (EFER/IA32_APIC_BASE/FS_BASE/GS_BASE/KERNEL_GS_BASE/STAR/LSTAR/CSTAR/SFMASK)
+            // WRMSR/RDMSR minimal stubs
             0x30 => { // WRMSR
                 let ecx = self.regs.ecx();
                 let val = ((self.regs.edx() as u64) << 32) | (self.regs.eax() as u64);
                 match ecx {
-                    0xC000_0080 => self.regs.efer = val, // EFER
-                    0x001B => { /* IA32_APIC_BASE - ignored here, handled by device model in future */ }
+                    0x0000_001B => { /* IA32_APIC_BASE: store conceptually; device model not fully wired */ }
+                    0x0000_0174 => { /* IA32_SYSENTER_CS */ }
+                    0x0000_0175 => { /* IA32_SYSENTER_ESP */ }
+                    0x0000_0176 => { /* IA32_SYSENTER_EIP */ }
+                    0xC000_0080 => { // EFER
+                        self.regs.efer = val;
+                        // LMA is read-only bit derived from PG+LME in real HW; approximate
+                        if self.regs.cr0_pg() && self.regs.efer_lme() {
+                            self.regs.efer |= 1 << 10;
+                        } else {
+                            self.regs.efer &= !(1 << 10);
+                        }
+                    }
+                    0xC000_0081 => { /* STAR */ }
+                    0xC000_0082 => { /* LSTAR */ }
+                    0xC000_0083 => { /* CSTAR */ }
+                    0xC000_0084 => { /* SFMASK */ }
+                    0xC000_0100 => { /* FS_BASE */ }
+                    0xC000_0101 => { /* GS_BASE */ }
+                    0xC000_0102 => { /* KERNEL_GS_BASE */ }
                     _ => {}
                 }
                 Ok(None)
@@ -784,8 +802,10 @@ impl SimpleVcpu {
             0x32 => { // RDMSR
                 let ecx = self.regs.ecx();
                 let val = match ecx {
+                    0x0000_001B => 0xFEE0_0900u64, // IA32_APIC_BASE stub
                     0xC000_0080 => self.regs.efer,
-                    0x001B => 0xFEE0_0900, // IA32_APIC_BASE default-ish stub (enabled,bsp,base)
+                    0xC000_0081..=0xC000_0084 => 0,
+                    0xC000_0100..=0xC000_0102 => 0,
                     _ => 0,
                 };
                 self.regs.set_eax(val as u32);

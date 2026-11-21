@@ -115,6 +115,13 @@ impl Registers {
         self.set_reg64(idx, val as u64);
     }
 
+
+
+    pub fn cr0_pg(&self) -> bool { (self.cr0 & (1 << 31)) != 0 }
+    pub fn cr0_pe(&self) -> bool { (self.cr0 & 1) != 0 }
+    pub fn efer_lme(&self) -> bool { (self.efer & (1 << 8)) != 0 }
+    pub fn efer_lma(&self) -> bool { (self.efer & (1 << 10)) != 0 }
+    pub fn long_mode_active(&self) -> bool { self.cr0_pg() && self.efer_lme() }
     /// Retorna el valor de 8 bits de un registro.
     pub fn get_reg8(&self, idx: u8, has_rex: bool) -> u8 {
         if !has_rex && (4..=7).contains(&idx) {
