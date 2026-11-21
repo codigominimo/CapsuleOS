@@ -147,6 +147,7 @@ impl SimpleVcpu {
             let n = TRACE_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n < 20000 { eprintln!("[fwtrace {n:04}] rip=0x{:X} lin=0x{:X} op=0x{:02X} cr0={:X} rsp=0x{:X} cs=0x{:X} csb=0x{:X}", rip_before, linear_before, opcode, self.regs.cr0, self.regs.rsp, self.regs.cs, self.regs.cs_base); }
         }
+
         loop {
             match opcode {
                 0x66 => { operand_size_16 = !operand_size_16; opcode = self.fetch_u8(mem)?; }
@@ -470,23 +471,24 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
-            // Grupo 1 r/m8, imm8 (0x80): /0 ADD, /1 OR, /4 AND, /5 SUB, /6 XOR, /7 CMP
-            0x80 => {
-                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
-                self.regs.rip += 1;
+            // Grupo 1 r/m8, imm8 (0x80/0x82)
+            0x80 | 0x82 => {
+                let modrm_byte = self.fetch_u8(mem)?;
                 let modrm = ModRm::parse(modrm_byte, &rex);
-                let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 }); let rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, &rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?;
+                let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 });
+                let rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, &rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?;
                 let dst = rm_loc.read_u8(&rex, &self.regs, mem)?;
-                let imm = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
-                self.regs.rip += 1;
+                let imm = self.fetch_u8(mem)?;
                 match modrm.reg & 0x07 {
                     0 => { let res = dst.wrapping_add(imm); update_add_flags_u32(&mut self.regs.rflags, dst as u32, imm as u32, res as u32); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
                     1 => { let res = dst | imm; update_logic_flags_u64(&mut self.regs.rflags, res as u64, false); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    2 => { let c=self.regs.cf() as u8; let res=dst.wrapping_add(imm).wrapping_add(c); let f=&mut self.regs.rflags; *f&=!(FLAG_CF|FLAG_PF|FLAG_AF|FLAG_ZF|FLAG_SF|FLAG_OF); if (dst as u16 + imm as u16 + c as u16)>0xFF {*f|=FLAG_CF;} if res==0{*f|=FLAG_ZF;} if res&0x80!=0{*f|=FLAG_SF;} if ((dst^res)&(imm^res)&0x80)!=0{*f|=FLAG_OF;} if ((dst^imm^res)&0x10)!=0{*f|=FLAG_AF;} if (res.count_ones()%2==0){*f|=FLAG_PF;} rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    3 => { let b=self.regs.cf() as u8; let res=dst.wrapping_sub(imm).wrapping_sub(b); let f=&mut self.regs.rflags; *f&=!(FLAG_CF|FLAG_PF|FLAG_AF|FLAG_ZF|FLAG_SF|FLAG_OF); if (dst as u16)<(imm as u16 + b as u16){*f|=FLAG_CF;} if res==0{*f|=FLAG_ZF;} if res&0x80!=0{*f|=FLAG_SF;} if ((dst^imm)&(dst^res)&0x80)!=0{*f|=FLAG_OF;} if ((dst^imm^res)&0x10)!=0{*f|=FLAG_AF;} if (res.count_ones()%2==0){*f|=FLAG_PF;} rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
                     4 => { let res = dst & imm; update_logic_flags_u64(&mut self.regs.rflags, res as u64, false); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
                     5 => { let res = dst.wrapping_sub(imm); update_sub_flags_u32(&mut self.regs.rflags, dst as u32, imm as u32, res as u32); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
                     6 => { let res = dst ^ imm; update_logic_flags_u64(&mut self.regs.rflags, res as u64, false); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
                     7 => { let res = dst.wrapping_sub(imm); update_sub_flags_u32(&mut self.regs.rflags, dst as u32, imm as u32, res as u32); }
-                    other => return Err(format!("Operacion grupo 0x80 /{} no soportada", other)),
+                    _ => unreachable!(),
                 }
                 Ok(None)
             }
@@ -504,9 +506,10 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
-            // MOVS/STOS/LODS/CMPS/SCAS (A4-A7, AA-AF) minimal, REP support
-            0xA4..=0xA7 | 0xAA..=0xAF => {
-                let size = if opcode==0xA4||opcode==0xA6||opcode==0xAA||opcode==0xAC||opcode==0xAE { 1u64 } else if operand_size_16 { 2u64 } else if is_64bit { 8u64 } else { 4u64 };
+            // INS/OUTS (6C-6F) and MOVS/STOS/LODS/CMPS/SCAS (A4-A7, AA-AF) minimal, REP support
+            0x6C..=0x6F | 0xA4..=0xA7 | 0xAA..=0xAF => {
+                if matches!(opcode, 0x6C..=0x6F) && is_64bit { return Ok(Some(CpuExitReason::Exception { vector: 6, error_code: None })); }
+                let size = if opcode==0xA4||opcode==0xA6||opcode==0xAA||opcode==0xAC||opcode==0xAE || opcode==0x6C||opcode==0x6E { 1u64 } else if operand_size_16 { 2u64 } else if is_64bit { 8u64 } else { 4u64 };
                 let count_reg = if addr_size_16 { self.regs.get_reg16(1) as u64 } else if is_64bit { self.regs.rcx } else { self.regs.get_reg32(1) as u64 };
                 let mut count = if rep_prefix!=0 { count_reg } else { 1 };
                 while count>0 {
@@ -520,9 +523,11 @@ impl SimpleVcpu {
                         0xAA|0xAB => { let mut b=[0u8;8]; let n=size as usize; b[..n].copy_from_slice(&self.regs.rax.to_le_bytes()[..n]); mem.write_bytes(GuestAddress::new(es_base.wrapping_add(di)), &b[..n]).map_err(|e|e.to_string())?; self.regs.rdi = if addr_size_16 { (self.regs.rdi&!0xFFFF)|((di.wrapping_add(step)&0xFFFF)) } else if is_64bit { di.wrapping_add(step) } else { (self.regs.rdi&!0xFFFF_FFFF)|((di as u32).wrapping_add(step as u32) as u64)}; }
                         0xAC|0xAD => { let mut b=[0u8;8]; let n=size as usize; mem.read_bytes(GuestAddress::new(ds_base.wrapping_add(si)), &mut b[..n]).map_err(|e|e.to_string())?; if size==1 { self.regs.rax=(self.regs.rax&!0xFF)|(b[0] as u64);} else if size==2 { self.regs.rax=(self.regs.rax&!0xFFFF)|(u16::from_le_bytes([b[0],b[1]]) as u64);} else if size==4 { self.regs.set_reg32(0,u32::from_le_bytes([b[0],b[1],b[2],b[3]])); } else { self.regs.rax=u64::from_le_bytes(b); } self.regs.rsi = if addr_size_16 { (self.regs.rsi&!0xFFFF)|((si.wrapping_add(step)&0xFFFF)) } else if is_64bit { si.wrapping_add(step) } else { (self.regs.rsi&!0xFFFF_FFFF)|((si as u32).wrapping_add(step as u32) as u64)}; }
                         0xA6|0xA7|0xAE|0xAF => { let mut sb=[0u8;8]; let mut db=[0u8;8]; let n=size as usize; if opcode==0xAE||opcode==0xAF { db[..n].copy_from_slice(&self.regs.rax.to_le_bytes()[..n]); } else { mem.read_bytes(GuestAddress::new(ds_base.wrapping_add(si)), &mut sb[..n]).map_err(|e|e.to_string())?; } let dv = { mem.read_bytes(GuestAddress::new(es_base.wrapping_add(di)), &mut db[..n]).map_err(|e|e.to_string())?; u64::from_le_bytes(db) & (if size==8 {!0} else {(1u64<<(size*8))-1}) }; let sv = if opcode==0xAE||opcode==0xAF { self.regs.rax & (if size==8 {!0} else {(1u64<<(size*8))-1}) } else { u64::from_le_bytes(sb) & (if size==8 {!0} else {(1u64<<(size*8))-1}) }; let r = sv.wrapping_sub(dv); if size==1 { { let r8=r as u8; let f=&mut self.regs.rflags; *f&=!(FLAG_CF|FLAG_PF|FLAG_AF|FLAG_ZF|FLAG_SF|FLAG_OF); if (sv as u8)<(dv as u8){*f|=FLAG_CF;} if r8==0{*f|=FLAG_ZF;} if (r8&0x80)!=0{*f|=FLAG_SF;} if ((sv^dv)&(sv^(r8 as u64))&0x80)!=0{*f|=FLAG_OF;} if (((sv as u8)^(dv as u8)^(r8))&0x10)!=0{*f|=FLAG_AF;} if (r8.count_ones()%2==0){*f|=FLAG_PF;} }} else if size==2 { update_sub_flags_u16(&mut self.regs.rflags, sv as u16, dv as u16, r as u16);} else if size==4 { update_sub_flags_u32(&mut self.regs.rflags, sv as u32, dv as u32, r as u32);} else { update_sub_flags_u64(&mut self.regs.rflags, sv,dv,r);} if opcode!=0xAE && opcode!=0xAF { self.regs.rsi = if addr_size_16 { (self.regs.rsi&!0xFFFF)|((si.wrapping_add(step)&0xFFFF)) } else if is_64bit { si.wrapping_add(step) } else { (self.regs.rsi&!0xFFFF_FFFF)|((si as u32).wrapping_add(step as u32) as u64)}; } self.regs.rdi = if addr_size_16 { (self.regs.rdi&!0xFFFF)|((di.wrapping_add(step)&0xFFFF)) } else if is_64bit { di.wrapping_add(step) } else { (self.regs.rdi&!0xFFFF_FFFF)|((di as u32).wrapping_add(step as u32) as u64)}; if rep_prefix==0xF3 && !self.regs.zf() { break; } if rep_prefix==0xF2 && self.regs.zf() { break; } }
+                        0x6C|0x6D => { let port=self.regs.edx() as u16; let io_size=if opcode==0x6C {1} else if operand_size_16 {2} else {4}; return Ok(Some(CpuExitReason::IoIn { port, size: io_size })); }
+                        0x6E|0x6F => { let port=self.regs.edx() as u16; let n=size as usize; let mut b=[0u8;4]; mem.read_bytes(GuestAddress::new(ds_base.wrapping_add(si)), &mut b[..n]).map_err(|e|e.to_string())?; self.regs.rsi = if addr_size_16 { (self.regs.rsi&!0xFFFF)|((si.wrapping_add(step)&0xFFFF)) } else if is_64bit { si.wrapping_add(step) } else { (self.regs.rsi&!0xFFFF_FFFF)|((si as u32).wrapping_add(step as u32) as u64)}; let data = if opcode==0x6E { b[0] as u32 } else if operand_size_16 { u16::from_le_bytes([b[0],b[1]]) as u32 } else { u32::from_le_bytes([b[0],b[1],b[2],b[3]]) }; let io_size=if opcode==0x6E {1} else if operand_size_16 {2} else {4}; if rep_prefix!=0 { count-=1; if addr_size_16 { self.regs.rcx=(self.regs.rcx&!0xFFFF)|count; } else if is_64bit { self.regs.rcx=count; } else { self.regs.set_reg32(1,count as u32);} } return Ok(Some(CpuExitReason::IoOut { port, data, size: io_size })); }
                         _=>{}
                     }
-                    if rep_prefix!=0 { count-=1; if count==0 { break; } if opcode>=0xA6 && opcode<=0xA7 { } if opcode>=0xAE { } } else { break; }
+                    if rep_prefix!=0 { count-=1; if count==0 { break; } } else { break; }
                 }
                 if rep_prefix!=0 { if addr_size_16 { self.regs.rcx=(self.regs.rcx&!0xFFFF)|count; } else if is_64bit { self.regs.rcx=count; } else { self.regs.set_reg32(1,count as u32);} }
                 Ok(None)
