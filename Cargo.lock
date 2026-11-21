@@ -12,6 +12,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "capsule-bundle"
+version = "0.1.0"
+dependencies = [
+ "capsule-core",
+]
+
+[[package]]
 name = "capsule-core"
 version = "0.1.0"
 dependencies = [
@@ -41,6 +48,7 @@ name = "capsule-gui"
 version = "0.1.0"
 dependencies = [
  "capsule-boot",
+ "capsule-bundle",
  "capsule-core",
  "capsule-cpu",
  "capsule-devices",
