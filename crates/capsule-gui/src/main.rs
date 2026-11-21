@@ -1858,7 +1858,7 @@ fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::
         for (i,b) in bytes.iter_mut().enumerate() { *b = vm.memory.read_u8(capsule_core::types::GuestAddress::new(rip.wrapping_add(i as u64))).unwrap_or(0); }
         println!("  [INFO] BIOS externo: exit={:?} rip=0x{:X} bytes={:02X?}", exit, rip, bytes);
         let r = vm.get_regs();
-        println!("  [INFO] regs rax={:X} rbx={:X} rcx={:X} rdx={:X} rsp={:X} rbp={:X} rsi={:X} rdi={:X} cr0={:X} cr4={:X} efer={:X}", r.rax, r.rbx, r.rcx, r.rdx, r.rsp, r.rbp, r.rsi, r.rdi, r.cr0, r.cr4, r.efer);
+        println!("  [INFO] regs rax={:X} rbx={:X} rcx={:X} rdx={:X} rsp={:X} rbp={:X} rsi={:X} rdi={:X} cr0={:X} cr4={:X} efer={:X} cs={:X} ds={:X} ss={:X} es={:X}", r.rax, r.rbx, r.rcx, r.rdx, r.rsp, r.rbp, r.rsi, r.rdi, r.cr0, r.cr4, r.efer, r.cs, r.ds, r.ss, r.es);
         if matches!(exit, VcpuExit::Halt) {
             println!("  [OK] BIOS externo completó HLT (caso reproducible validado para esta imagen/configuración).");
         } else {

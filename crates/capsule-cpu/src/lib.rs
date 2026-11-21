@@ -887,6 +887,30 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
+            // AAM imm8 (0xD4) - invalid in 64-bit mode
+            0xD4 => {
+                if is_64bit { return Ok(Some(CpuExitReason::Exception { vector: 6, error_code: None })); }
+                let imm = self.fetch_u8(mem)? as u16;
+                if imm == 0 { return Ok(Some(CpuExitReason::Exception { vector: 0, error_code: None })); }
+                let al = (self.regs.rax & 0xFF) as u16;
+                let ah = al / imm;
+                let alr = al % imm;
+                self.regs.rax = (self.regs.rax & !0xFFFF) | (((ah & 0xFF) as u64) << 8) | ((alr & 0xFF) as u64);
+                update_logic_flags_u16(&mut self.regs.rflags, (self.regs.rax & 0xFFFF) as u16);
+                Ok(None)
+            }
+            // AAD imm8 (0xD5) - invalid in 64-bit mode
+            0xD5 => {
+                if is_64bit { return Ok(Some(CpuExitReason::Exception { vector: 6, error_code: None })); }
+                let imm = self.fetch_u8(mem)? as u16;
+                let al = (self.regs.rax & 0xFF) as u16;
+                let ah = ((self.regs.rax >> 8) & 0xFF) as u16;
+                let res = ah.wrapping_mul(imm).wrapping_add(al) & 0xFF;
+                self.regs.rax = (self.regs.rax & !0xFFFF) | (res as u64);
+                update_logic_flags_u16(&mut self.regs.rflags, res as u16);
+                Ok(None)
+            }
+
             // Saltos condicionales Jcc rel8 (0x70..=0x7F)
             0x70..=0x7F => {
                 let rel8 = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i8;
