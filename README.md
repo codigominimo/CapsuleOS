@@ -150,6 +150,11 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - VM-exits de E/S por puerto (IN/OUT) se traducen al despacho de dispositivos PIO/tick de plataforma existente, preservando el modelo actual de emulación de dispositivos.
   - `capsule-gui` intenta WHPX por defecto en la GUI/demo (con fallback y reporte de estado) y agrega `capsule.exe test-whpx` (guest mínimo HLT + IO a COM1 en WHPX, o SKIP si el host no lo soporta).
   - Limitaciones: sin MMIO, sin inyección/entrega arquitectural de IRQ (IDT/CLI/STI/IRET/APIC), contexto inicial mínimo (sin long mode/firmware/kernel real), y fidelidad/temporización dependiente del modelo de tick/sondeo actual.
+* [~] **Hito M12 - Firmware BIOS & UEFI** (en progreso):
+  - **M12.1 (completado, scope acotado)**: ROM mapeada en `GuestMemory` (writes ignoradas); `capsule-vmm` mapea BIOS y hace boot firmware desde disco IDE primario con reset minimo. BIOS stub integrado 64 KiB (software) imprime banner COM1, lee LBA0 por ATA PIO a 0x7C00 y salta al boot sector. `VmConfig.firmware_bios_path` permite BIOS externa experimental. `capsule.exe test-firmware [bios.bin]` valida el flujo.
+  - **M12.2 (pendiente)**: ISO/ATAPI CD-ROM boot, ISO9660/El Torito segun viabilidad.
+  - **M12.3 (pendiente, condicionado)**: OVMF/UEFI solo soportado con caso reproducible validado; bloqueadores: MMIO, IRQ/APIC, CPU/modos/excepciones/MSRs mas completos.
+  - Limitaciones: no SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/INT BIOS reales, A20, PCI BIOS, DMA, IRQ delivery en CPU, ni ISO/El Torito.
 
 ---
 
@@ -246,6 +251,15 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 ```powershell
 # Ejecuta un guest mínimo (HLT + IO a COM1) en WHPX si el host lo soporta; si no, reporta SKIP y CapsuleOS usa backend software
 .\target\release\capsule.exe test-whpx
+```
+
+### Verificar firmware BIOS y boot desde disco (Hito M12.1)
+```powershell
+# Usa BIOS stub integrado determinista (sin archivos externos): banner COM1, carga LBA0 a 0x7C00 y ejecuta boot sector
+.\target\release\capsule.exe test-firmware
+
+# Experimental: probar una imagen BIOS externa (p.ej. SeaBIOS). Solo se considera soportada con caso reproducible validado.
+.\target\release\capsule.exe test-firmware .\ruta\bios.bin
 ```
 
 ### Ejecutar la batería de pruebas automatizadas

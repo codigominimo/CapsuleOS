@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M11 completados)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M11 completados, M12 en progreso)
 //!
 //! Punto de entrada de la aplicacion `capsule.exe`.
 //! Comandos CLI:
@@ -14,6 +14,7 @@
 //! - `capsule.exe test-framebuffer` : Verificacion de framebuffer VGA/Bochs VBE y LFB (M9).
 //! - `capsule.exe test-input`       : Verificacion de entrada PS/2 (i8042, teclado/raton, IRQ1/IRQ12) (M10).
 //! - `capsule.exe test-whpx`       : Verificacion del backend de virtualizacion por hardware WHPX (M11).
+//! - `capsule.exe test-firmware [bios]`: Verificacion de firmware BIOS/stub y boot desde disco (M12.1).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -103,6 +104,7 @@ fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(1),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -155,6 +157,7 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(128),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -221,6 +224,7 @@ fn run_test_serial() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(4),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -378,6 +382,7 @@ fn run_ide_guest_on_disk(
         memory_size: ByteSize::from_mib(2),
 
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     vm.attach_primary_master_disk(disk)?;
@@ -648,6 +653,7 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
     // Seleccionar 00:03.0, offset 0x00 (Vendor/Device)
     // Guest escribe 0x80001800 a 0xCF8 y lee 0xCFC (4 bytes) -> [ebx]
@@ -738,6 +744,7 @@ fn run_test_framebuffer() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(8),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
 
     // Guest: configura Bochs VBE 320x200x32 con LFB y escribe patron rojo en el framebuffer, luego HLT.
@@ -859,6 +866,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
     let kbd_code = [
         0xE4, 0x64, // in al, 0x64
@@ -888,6 +896,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
     let enable_mouse = [
         0xB0, 0xD4, 0xE6, 0x64, // out 64, D4
@@ -938,6 +947,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
     for dev in &mut vm3.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -984,6 +994,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
     for dev in &mut vm4.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -1069,6 +1080,7 @@ fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(1),
         backend: VmBackendKind::Whpx,
+        firmware_bios_path: None,
     }) {
         Ok(vm) => vm,
         Err(e) => {
@@ -1113,6 +1125,7 @@ fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(1),
         backend: VmBackendKind::Whpx,
+        firmware_bios_path: None,
     }) {
         Ok(mut vm_io) => {
             let io_code = [
@@ -1251,6 +1264,7 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     })?;
     // Leer 0xCF8 (4 bytes) -> EAX debe ser 0 en estado inicial del bus PCI
     let code = [
@@ -1295,6 +1309,7 @@ fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = open_disk_image_for_boot(path)?;
@@ -1302,6 +1317,84 @@ fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<
     println!("  [OK] LBA0 cargado en 0x7C00, RIP=0x7C00 (imagen: {path})");
     let exit = vm.run()?;
     Ok(exit)
+}
+
+
+fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Firmware BIOS (Hito M12.1)         ");
+    println!("==================================================");
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let path = std::env::temp_dir().join(format!("capsuleos_m12_firmware_{nanos}.img"));
+    let sector_size = DEFAULT_SECTOR_SIZE as usize;
+
+    // Disco con boot sector que marca memoria y hace HLT (determinista)
+    let mut disk = RawDiskImage::create(&path, 16, DEFAULT_SECTOR_SIZE)?;
+    let mut boot_sector = vec![0u8; sector_size];
+    // mov eax, 0xB105B007 ; mov ebx, 0x0500 ; mov [ebx], eax ; hlt
+    let code: [u8; 13] = [
+        0xB8, 0x07, 0xB0, 0x05, 0xB1, // mov eax, 0xB105B007
+        0xBB, 0x00, 0x05, 0x00, 0x00, // mov ebx, 0x0500
+        0x89, 0x03,                   // mov [ebx], eax
+        0xF4,                         // hlt
+    ];
+    boot_sector[..code.len()].copy_from_slice(&code);
+    boot_sector[510] = 0x55;
+    boot_sector[511] = 0xAA;
+    disk.write_sectors(0, 1, &boot_sector)?;
+    disk.flush()?;
+    drop(disk);
+
+    let bios_bytes = if let Some(p) = bios_path {
+        let data = std::fs::read(p)?;
+        println!("  [INFO] Usando imagen BIOS externa: {} ({} bytes)", p, data.len());
+        Some(data)
+    } else {
+        println!("  [INFO] Usando BIOS stub integrado (determinista, M12.1)");
+        None
+    };
+
+    let config = VmConfig {
+        name: "FirmwareBootTest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+        backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: bios_path.map(|s| s.to_string()),
+    };
+    let mut vm = VirtualMachine::new(config)?;
+    let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
+    vm.boot_firmware_from_primary_master_disk(Box::new(disk), bios_bytes.as_deref())?;
+
+    println!("  [OK] Firmware mapeado y estado de reset configurado (RIP=0x{:X})", vm.rip());
+    let exit = vm.run_steps(5_000_000)?;
+    let exit = exit.unwrap_or(VcpuExit::Shutdown);
+    assert_eq!(exit, VcpuExit::Halt, "Guest/firmware debe finalizar con HLT");
+
+    let marker = vm.memory.read_u32(capsule_core::types::GuestAddress::new(0x0500)).unwrap_or(0);
+    assert_eq!(
+        marker, 0xB105B007,
+        "El boot sector cargado por firmware no ejecuto correctamente (marker=0x{marker:08X})"
+    );
+
+    // Verificar firma de boot sector cargada en 0x7C00 (el firmware debio copiar LBA0)
+    let sig0 = vm.memory.read_u8(capsule_core::types::GuestAddress::new(0x7DFE)).unwrap_or(0);
+    let sig1 = vm.memory.read_u8(capsule_core::types::GuestAddress::new(0x7DFF)).unwrap_or(0);
+    assert_eq!([sig0, sig1], [0x55, 0xAA], "Firma 0x55AA no encontrada en 0x7C00 tras boot firmware");
+
+    println!("  [OK] BIOS/firma LBA0 transferida a 0x7C00 y control cedido al boot sector");
+    println!("  [OK] Boot sector ejecuto via firmware (marker 0xB105B007)");
+    println!("--------------------------------------------------");
+    if bios_path.is_some() {
+        println!("  Firmware BIOS externo (experimental): prueba de arranque basica completada");
+        println!("  Nota: compatibilidad de SeaBIOS/OVMF depende de ISA/modos/IRQ/MMIO no modelados; validar caso por caso.");
+    } else {
+        println!("  Firmware BIOS stub integrado (M12.1): verificado (software, PIO/polling)");
+    }
+    println!("==================================================");
+
+    let _ = std::fs::remove_file(&path);
+    Ok(())
 }
 
 fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -1387,6 +1480,7 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
@@ -2303,6 +2397,15 @@ fn main() {
         return;
     }
 
+    if let Some(pos) = args.iter().position(|arg| arg == "test-firmware" || arg == "--test-firmware") {
+        let bios_path = args.get(pos + 1).map(|s| s.as_str());
+        if let Err(e) = run_test_firmware(bios_path) {
+            eprintln!("Error en test-firmware: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let host_info = get_host_info();
     print_cli_summary(host_info);
 
@@ -2311,6 +2414,7 @@ fn main() {
         vcpu_count: 1,
         memory_size: ByteSize::from_mib(16),
         backend: VmBackendKind::Whpx,
+        firmware_bios_path: None,
     }) {
         Ok(vm) => vm,
         Err(e) => {

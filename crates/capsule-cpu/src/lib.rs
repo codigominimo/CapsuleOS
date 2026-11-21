@@ -122,6 +122,45 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
+            // ALU AL, imm8: TEST(0xA8), AND(0x24), OR(0x0C), XOR(0x34), CMP(0x3C)
+            0xA8 | 0x24 | 0x0C | 0x34 | 0x3C => {
+                let imm = mem
+                    .read_u8(GuestAddress::new(self.regs.rip))
+                    .map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let al = self.regs.get_reg8(0, rex.present);
+                match opcode {
+                    0xA8 => { // TEST AL, imm8
+                        let res = al & imm;
+                        update_logic_flags_u64(&mut self.regs.rflags, res as u64, false);
+                    }
+                    0x24 => { // AND AL, imm8
+                        let res = al & imm;
+                        update_logic_flags_u64(&mut self.regs.rflags, res as u64, false);
+                        self.regs.set_reg8(0, res, rex.present);
+                    }
+                    0x0C => { // OR AL, imm8
+                        let res = al | imm;
+                        update_logic_flags_u64(&mut self.regs.rflags, res as u64, false);
+                        self.regs.set_reg8(0, res, rex.present);
+                    }
+                    0x34 => { // XOR AL, imm8
+                        let res = al ^ imm;
+                        update_logic_flags_u64(&mut self.regs.rflags, res as u64, false);
+                        self.regs.set_reg8(0, res, rex.present);
+                    }
+                    0x3C => { // CMP AL, imm8
+                        let res = al.wrapping_sub(imm);
+                        update_sub_flags_u32(&mut self.regs.rflags, al as u32, imm as u32, res as u32);
+                    }
+                    _ => {}
+                }
+                Ok(None)
+            }
+
+            // CLI/STI/CLD/STD (flags de control no modeladas; tratados como NOP para compatibilidad de firmware)
+            0xFA | 0xFB | 0xFC | 0xFD => Ok(None),
+
             // MOV r32/r64, imm32/imm64 (0xB8..=0xBF)
             0xB8..=0xBF => {
                 let reg_idx = (opcode - 0xB8) + if rex.b { 8 } else { 0 };
@@ -171,6 +210,27 @@ impl SimpleVcpu {
                 let rm_loc = OperandLocation::resolve_rm(&modrm, &rex, &mut self.regs, mem)?;
                 let byte_val = rm_loc.read_u8(&rex, &self.regs, mem)?;
                 self.regs.set_reg8(modrm.reg, byte_val, rex.present);
+                Ok(None)
+            }
+
+            // Grupo 1 r/m8, imm8 (0x80): /0 ADD, /1 OR, /4 AND, /5 SUB, /6 XOR, /7 CMP
+            0x80 => {
+                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let modrm = ModRm::parse(modrm_byte, &rex);
+                let rm_loc = OperandLocation::resolve_rm(&modrm, &rex, &mut self.regs, mem)?;
+                let dst = rm_loc.read_u8(&rex, &self.regs, mem)?;
+                let imm = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                match modrm.reg & 0x07 {
+                    0 => { let res = dst.wrapping_add(imm); update_add_flags_u32(&mut self.regs.rflags, dst as u32, imm as u32, res as u32); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    1 => { let res = dst | imm; update_logic_flags_u64(&mut self.regs.rflags, res as u64, false); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    4 => { let res = dst & imm; update_logic_flags_u64(&mut self.regs.rflags, res as u64, false); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    5 => { let res = dst.wrapping_sub(imm); update_sub_flags_u32(&mut self.regs.rflags, dst as u32, imm as u32, res as u32); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    6 => { let res = dst ^ imm; update_logic_flags_u64(&mut self.regs.rflags, res as u64, false); rm_loc.write_u8(res, &rex, &mut self.regs, mem)?; }
+                    7 => { let res = dst.wrapping_sub(imm); update_sub_flags_u32(&mut self.regs.rflags, dst as u32, imm as u32, res as u32); }
+                    other => return Err(format!("Operacion grupo 0x80 /{} no soportada", other)),
+                }
                 Ok(None)
             }
 
@@ -433,6 +493,16 @@ impl SimpleVcpu {
                             update_sub_flags_u32(&mut self.regs.rflags, val as u32, 1, res32);
                             rm_loc.write_val(res32 as u64, false, &mut self.regs, mem)?;
                         }
+                    }
+                    2 => {
+                        // CALL r/m (near, indirect)
+                        let ret_addr = self.regs.rip;
+                        self.push_u64(mem, ret_addr)?;
+                        self.regs.rip = val;
+                    }
+                    4 => {
+                        // JMP r/m (near, indirect)
+                        self.regs.rip = val;
                     }
                     other => return Err(format!("Operación 0xFF /{} no implementada", other)),
                 }

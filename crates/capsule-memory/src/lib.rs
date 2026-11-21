@@ -40,6 +40,8 @@ impl std::error::Error for MemoryError {}
 pub struct GuestMemory {
     base_hva: *mut u8,
     size: usize,
+    /// Rangos ROM mapeados [inicio, fin) en GPA. Las escrituras a estas regiones se ignoran.
+    rom_ranges: Vec<(usize, usize)>,
 }
 
 // GuestMemory es segura de transferir entre hilos
@@ -69,6 +71,7 @@ impl GuestMemory {
             Ok(Self {
                 base_hva: ptr as *mut u8,
                 size,
+                rom_ranges: Vec::new(),
             })
         }
     }
@@ -104,6 +107,41 @@ impl GuestMemory {
         start.checked_add(len).map_or(false, |end| end <= self.size)
     }
 
+    /// Mapea una imagen ROM en la dirección física del guest indicada.
+    /// Los bytes se copian al backing store y el rango se marca como solo lectura
+    /// (las escrituras posteriores a este rango se ignoran).
+    pub fn map_rom(&mut self, gpa: GuestAddress, data: &[u8]) -> Result<(), MemoryError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if !self.is_valid_range(gpa, data.len()) {
+            return Err(MemoryError::OutOfBounds {
+                address: gpa,
+                size: data.len(),
+            });
+        }
+        let offset = gpa.raw() as usize;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), self.base_hva.add(offset), data.len());
+        }
+        self.rom_ranges.push((offset, offset + data.len()));
+        Ok(())
+    }
+
+    #[inline]
+    fn overlaps_rom(&self, start: usize, end: usize) -> bool {
+        self.rom_ranges
+            .iter()
+            .any(|&(rs, re)| start < re && end > rs)
+    }
+
+    #[inline]
+    fn is_addr_rom(&self, addr: usize) -> bool {
+        self.rom_ranges
+            .iter()
+            .any(|&(rs, re)| addr >= rs && addr < re)
+    }
+
     /// Lee un byte en la dirección `gpa`.
     pub fn read_u8(&self, gpa: GuestAddress) -> Result<u8, MemoryError> {
         let offset = gpa.raw() as usize;
@@ -117,6 +155,7 @@ impl GuestMemory {
     }
 
     /// Escribe un byte en la dirección `gpa`.
+    /// Si la dirección pertenece a una región ROM mapeada, la escritura se ignora.
     pub fn write_u8(&mut self, gpa: GuestAddress, val: u8) -> Result<(), MemoryError> {
         let offset = gpa.raw() as usize;
         if offset >= self.size {
@@ -124,6 +163,9 @@ impl GuestMemory {
                 address: gpa,
                 size: 1,
             });
+        }
+        if self.is_addr_rom(offset) {
+            return Ok(());
         }
         unsafe {
             *self.base_hva.add(offset) = val;
@@ -153,6 +195,7 @@ impl GuestMemory {
     }
 
     /// Escribe un bloque de bytes a partir de la dirección `gpa`.
+    /// Los bytes que caen dentro de regiones ROM mapeadas se ignoran.
     pub fn write_bytes(&mut self, gpa: GuestAddress, data: &[u8]) -> Result<(), MemoryError> {
         if !self.is_valid_range(gpa, data.len()) {
             return Err(MemoryError::OutOfBounds {
@@ -161,8 +204,20 @@ impl GuestMemory {
             });
         }
         let offset = gpa.raw() as usize;
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), self.base_hva.add(offset), data.len());
+        let end = offset + data.len();
+        if !self.overlaps_rom(offset, end) {
+            unsafe {
+                std::ptr::copy_nonoverlapping(data.as_ptr(), self.base_hva.add(offset), data.len());
+            }
+            return Ok(());
+        }
+        for (i, &b) in data.iter().enumerate() {
+            let addr = offset + i;
+            if !self.is_addr_rom(addr) {
+                unsafe {
+                    *self.base_hva.add(addr) = b;
+                }
+            }
         }
         Ok(())
     }

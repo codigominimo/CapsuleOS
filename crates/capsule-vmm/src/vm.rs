@@ -1,4 +1,4 @@
-﻿//! Implementación de la Máquina Virtual (VirtualMachine).
+//! Implementación de la Máquina Virtual (VirtualMachine).
 
 use crate::backend::write_io_result_to_regs;
 use crate::config::{VmBackendKind, VmConfig};
@@ -162,6 +162,84 @@ impl VirtualMachine {
         regs.rdx = (regs.rdx & !0xFF) | 0x80;
         self.set_regs(&regs);
         self.attach_primary_master_disk(disk)?;
+        Ok(())
+    }
+
+    /// Mapea una imagen de firmware BIOS en ROM guest y retorna el RIP de entrada/reset.
+    /// - Imágenes <= 64 KiB: se mapean en la ventana BIOS clásica 0xF0000-0xFFFFF, entrada 0xFFFF0.
+    /// - Imágenes mayores (p.ej. SeaBIOS como imagen plana best-effort): se mapean alineadas al
+    ///   final del primer MiB (base = 1 MiB - size, mín. 0xE0000). Entrada 0xFFFF0 si está dentro
+    ///   del rango mapeado; en caso contrario, inicio de la imagen (experimental).
+    pub fn map_bios_rom(&mut self, data: &[u8]) -> Result<u64, VmmError> {
+        if data.is_empty() {
+            return Err(VmmError::InitializationFailed(
+                "Imagen BIOS vacía".to_string(),
+            ));
+        }
+        let (map_base, entry_rip) = if data.len() <= 0x1_0000 {
+            (0xF_0000u64, 0xF_FFF0u64)
+        } else {
+            let size = data.len() as u64;
+            let base = 0x0010_0000u64.saturating_sub(size).max(0xE_0000);
+            (base, 0xF_FFF0u64)
+        };
+        let end = map_base + (data.len() as u64);
+        if end > self.memory.size() as u64 {
+            return Err(VmmError::MemoryMappingFailed(format!(
+                "Imagen BIOS ({} bytes en 0x{:X}) excede la memoria guest ({} bytes)",
+                data.len(),
+                map_base,
+                self.memory.size()
+            )));
+        }
+        self.memory
+            .map_rom(GuestAddress::new(map_base), data)
+            .map_err(|e| VmmError::MemoryMappingFailed(format!("Error mapeando BIOS ROM: {e}")))?;
+        let entry = if entry_rip >= map_base && entry_rip < end {
+            entry_rip
+        } else {
+            map_base
+        };
+        Ok(entry)
+    }
+
+    /// Retorna un BIOS stub integrado determinista (M12.1, 64 KiB) que imprime un banner en COM1,
+    /// lee LBA0 del disco IDE primario maestro a 0x7C00 vía PIO y transfiere control al boot sector.
+    /// Diseñado para el backend software actual (modelo plano, sin interrupciones BIOS reales).
+    pub fn builtin_bios_stub() -> Vec<u8> {
+        build_builtin_bios_stub()
+    }
+
+    /// Arranque por firmware BIOS desde disco IDE primario maestro (M12.1, backend software).
+    /// Adjunta el disco, mapea BIOS (externa si se provee, o stub integrado), y establece estado de
+    /// reset mínimo (RIP=vector de reset, RSP temporal, RFLAGS=0x2, DL=0x80).
+    pub fn boot_firmware_from_primary_master_disk(
+        &mut self,
+        disk: Box<dyn BlockDevice>,
+        bios_image: Option<&[u8]>,
+    ) -> Result<(), VmmError> {
+        if disk.sector_size() != 512 {
+            return Err(VmmError::InitializationFailed(format!(
+                "Solo se soporta boot firmware desde disco con sectores de 512 bytes (recibido: {})",
+                disk.sector_size()
+            )));
+        }
+        self.attach_primary_master_disk(disk)?;
+        let owned;
+        let bios = if let Some(img) = bios_image {
+            img
+        } else {
+            owned = Self::builtin_bios_stub();
+            &owned
+        };
+        let entry = self.map_bios_rom(bios)?;
+
+        let mut regs = Registers::new();
+        regs.rip = entry;
+        regs.rsp = 0x0007_FFF0;
+        regs.rdx = 0x80; // DL = primer disco duro (convención BIOS)
+        regs.rflags = 0x2;
+        self.set_regs(&regs);
         Ok(())
     }
 
@@ -589,6 +667,104 @@ impl VirtualMachine {
 
 fn mask_for_size(size: u8) -> u64 {
     match size { 1 => 0xFF, 2 => 0xFFFF, 4 => 0xFFFF_FFFF, _ => u64::MAX }
+}
+
+/// Construye una imagen BIOS ROM de 64 KiB con un stub determinista (M12.1).
+/// - Mapeo esperado: 0xF0000..0xFFFFF (entrada de reset 0xFFFF0).
+/// - Comportamiento: imprime "CapsuleBIOS\r\n" por COM1 (0x3F8), lee LBA0 del IDE primario
+///   maestro a 0x7C00 mediante PIO y salta a 0x7C00. Si la lectura falla, imprime "BIOS:DISKERR\r\n" y HLT.
+/// Usa solo opcodes soportados por el intǸrprete software actual (modelo plano).
+fn build_builtin_bios_stub() -> Vec<u8> {
+    let mut rom = vec![0u8; 0x1_0000];
+    let base: u32 = 0xF_0000;
+
+    // Cuerpo del stub en offset 0x0100 (0xF0100)
+    let mut code: Vec<u8> = Vec::new();
+
+    // init stack: mov esp, 0x0007FFF0
+    code.extend_from_slice(&[0xBC, 0xF0, 0xFF, 0x07, 0x00]);
+
+    // print "CapsuleBIOS\r\n" a COM1 (0x3F8)
+    let banner = b"CapsuleBIOS\r\n";
+    for &b in banner {
+        // mov dx, 0x3F8; mov al, imm8; out dx, al
+        code.extend_from_slice(&[0xBA, 0xF8, 0x03, 0x00, 0x00, 0xB0, b, 0xEE]);
+    }
+
+    // ATA PIO: select master/LBA, read LBA0 -> 0x7C00
+    // mov dx,0x1F6; mov al,0xE0; out dx,al
+    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
+    // sector count = 1 (0x1F2)
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
+    // LBA low/mid/high = 0 (0x1F3-0x1F5)
+    code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
+    // command READ SECTORS 0x20 (0x1F7)
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
+
+    // poll status: timeout loop, error on ERR(0x01)/DF(0x20), proceed on DRQ(0x08)
+    // mov ecx, 0x00100000 (timeout ticks)
+    code.extend_from_slice(&[0xB9, 0x00, 0x00, 0x10, 0x00]);
+    let poll_loop = code.len();
+    // mov dx,0x1F7; in al,dx
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC]);
+    // test err/df: test al,0x21; jnz disk_err (patched)
+    code.extend_from_slice(&[0xA8, 0x21]);
+    let jnz_err_pos = code.len();
+    code.extend_from_slice(&[0x75, 0x00]); // patch -> disk_err
+    // test drq: test al,0x08; jnz read_sector (patched)
+    code.extend_from_slice(&[0xA8, 0x08]);
+    let jnz_drq_pos = code.len();
+    code.extend_from_slice(&[0x75, 0x00]); // patch -> read_sector
+    // dec ecx; jnz poll_loop
+    code.extend_from_slice(&[0xFF, 0xC9]);
+    let rel_back = (poll_loop as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rel_back as i8 as u8]);
+    // timeout -> disk_err (fallthrough)
+    let disk_err = code.len();
+    for &b in b"BIOS:DISKERR\r\n" {
+        code.extend_from_slice(&[0xBA, 0xF8, 0x03, 0x00, 0x00, 0xB0, b, 0xEE]);
+    }
+    code.push(0xF4); // hlt
+
+    let read_sector = code.len();
+    // read 256 dwords: mov dx,0x1F0; mov edi,0x7C00; mov ecx,128? 256 words=128 dwords*2; easier 256 dwords via insd not avail -> 128 * (in eax,dx; stosd-like manual) x2
+    // mov dx,0x1F0
+    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]);
+    // mov edi,0x00007C00
+    code.extend_from_slice(&[0xBF, 0x00, 0x7C, 0x00, 0x00]);
+    // mov ecx, 128 (dwords)
+    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]);
+    let read_loop = code.len();
+    // in eax,dx; mov [edi],eax; add edi,4; dec ecx; jnz read_loop
+    code.extend_from_slice(&[0xED, 0x89, 0x07, 0x83, 0xC7, 0x04, 0xFF, 0xC9]);
+    let rel_read = (read_loop as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rel_read as i8 as u8]);
+
+    // jump to boot sector: mov eax,0x7C00; jmp eax (FF /4)
+    code.extend_from_slice(&[0xB8, 0x00, 0x7C, 0x00, 0x00, 0xFF, 0xE0]);
+
+    // patch rel8 jumps
+    let rel_err = (disk_err as i32) - ((jnz_err_pos as i32) + 2);
+    let rel_drq = (read_sector as i32) - ((jnz_drq_pos as i32) + 2);
+    code[jnz_err_pos + 1] = rel_err as i8 as u8;
+    code[jnz_drq_pos + 1] = rel_drq as i8 as u8;
+
+    // place code at 0x0100
+    let code_off = 0x0100usize;
+    rom[code_off..code_off + code.len()].copy_from_slice(&code);
+
+    // Reset vector at 0xFFFF0: jmp near rel32 to 0xF0100
+    // instruction at 0xFFFF0, next ip = 0xFFFF5
+    let reset_off = 0xFFF0usize;
+    let target = base + (code_off as u32);
+    let next = base + 0xFFF5;
+    let rel = (target as i32).wrapping_sub(next as i32);
+    rom[reset_off] = 0xE9;
+    rom[reset_off + 1..reset_off + 5].copy_from_slice(&rel.to_le_bytes());
+
+    rom
 }
 
 impl VirtualMachine {

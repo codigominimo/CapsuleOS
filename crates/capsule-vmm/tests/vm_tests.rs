@@ -1,4 +1,4 @@
-﻿use capsule_boot::HDRS_MAGIC;
+use capsule_boot::HDRS_MAGIC;
 use capsule_core::types::{ByteSize, GuestAddress};
 use capsule_vmm::{VcpuExit, VirtualMachine, VmConfig, VmStatus};
 
@@ -10,6 +10,7 @@ fn test_minimal_vm_lifecycle_and_halt() {
         memory_size: ByteSize::from_mib(1),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear la VM");
@@ -43,6 +44,7 @@ fn test_vm_serial_com1_linux_earlyprintk() {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
@@ -108,6 +110,7 @@ fn test_vm_linux_direct_boot_protocol() {
         memory_size: ByteSize::from_mib(128),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
@@ -156,6 +159,7 @@ fn test_vm_ide_pio_identify_and_read() {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
 
@@ -280,6 +284,7 @@ fn test_vm_ide_pio_write_flush_persistence() {
             memory_size: ByteSize::from_mib(2),
         
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
         let mut vm = VirtualMachine::new(config).expect("create vm");
         let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");
@@ -418,6 +423,7 @@ fn test_vm_boot_from_disk_sector_reads_next_sector_via_ide() {
         memory_size: ByteSize::from_mib(2),
     
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
     let mut vm = VirtualMachine::new(config).expect("create vm");
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw disk");
@@ -481,6 +487,7 @@ fn test_vm_ide_pio_multisector_read_write_via_guest() {
             memory_size: ByteSize::from_mib(2),
         
         backend: capsule_vmm::VmBackendKind::Software,
+        firmware_bios_path: None,
     };
         let mut vm = VirtualMachine::new(config).expect("create vm");
         let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");

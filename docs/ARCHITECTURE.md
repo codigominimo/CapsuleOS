@@ -128,10 +128,11 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Pendiente: TCP, múltiples flujos/conexiones concurrentes, NAT/traducción completa, DNS real y mayor fidelidad de pila.
 
 ### 2.4. Arranque y Firmware
-* **`capsule-firmware`**:
-  * Soporte de firmware BIOS heredado (SeaBIOS embebido o tabla de reset mínima).
-  * Soporte UEFI mediante OVMF (Open Virtual Machine Firmware de EDK2).
-  * Tablas ACPI estáticas (RSDP, RSDT, XSDT, FADT, MADT, DSDT) necesarias para que los sistemas operativos modernos reconozcan múltiples núcleos y dispositivos PCI.
+* **`capsule-firmware`** (planeado como crate dedicado; M12.1 implementado incrementalmente en `capsule-vmm`/`capsule-memory`):
+  * M12.1: mapeo ROM BIOS en GPA (`GuestMemory::map_rom`), reset vector/configuracion minima y boot desde disco IDE primario. Stub BIOS integrado determinista 64 KiB para backend software (COM1 banner + ATA PIO LBA0 -> 0x7C00 + JMP boot sector). `VmConfig.firmware_bios_path` permite cargar imagen BIOS externa (experimental/best-effort).
+  * M12.2 (pendiente): ruta ISO/ATAPI CD-ROM boot (ISO9660/El Torito segun viabilidad).
+  * M12.3 (pendiente, condicionado): SeaBIOS/OVMF/UEFI completo solo con caso reproducible validado; requiere MMIO, IRQ/APIC, CPU/modos/excepciones/MSRs mas completos.
+  * Tablas ACPI/firmware completo siguen pendientes.
 
 * **`capsule-boot`**:
   * Cargador directo de kernel Linux (protocolo de arranque x86 de Linux bzImage).

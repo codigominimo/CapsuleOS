@@ -20,7 +20,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE (puertos DISPI) con LFB en RAM guest, renderizado en tiempo real en ventana Win32 (DIB/StretchDIBits) y validación `test-framebuffer` | **Completado** |
 | **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratón, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyección de eventos Win32 desde GUI y validación `test-input` | **Completado** |
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
-| **M12**| **Firmware BIOS & UEFI** | Integración de SeaBIOS y OVMF para arranque estándar desde disco/ISO | Pendiente |
+| **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito; M12.3 OVMF/UEFI condicionado a viabilidad | En progreso (M12.1 completado) |
 | **M13**| **Ubuntu Minimal / Server** | Arranque verificado de distribución Ubuntu Server mediante WHPX | Pendiente |
 | **M14**| **Ubuntu Desktop (GUI)** | Arranque verificado de entorno gráfico X11/Wayland de Ubuntu en ventana | Pendiente |
 | **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
@@ -75,3 +75,20 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - `capsule-gui` intenta backend WHPX por defecto para la sesión GUI/demo (con fallback a software y motivo reportado en UI) y agrega validación CLI `capsule.exe test-whpx`: en hosts con WHPX ejecuta guest mínimo (HLT + OUT a COM1), en hosts sin WHPX o con inicialización no utilizable reporta SKIP sin fallar.
 - Validación: `cargo test --workspace`, regresión CLI (`test-guest`, `test-boot`, `test-serial`, `test-storage`, `test-disk`, `test-cow`, `test-platform`, `test-network`, `test-framebuffer`, `test-input`, `test-boot-disk`) y `test-whpx` (ejecución WHPX o SKIP según host).
 - Limitaciones: sin MMIO dispatch, sin inyección/entrega arquitectural de interrupciones en CPU (IDT/CLI/STI/IRET/APIC), sin long mode/boot de kernel/firmware real en WHPX (contexto inicial mínimo), decodificación de VM-exit basada en offsets/heurísticas para IO (con fallback por bytes de instrucción) y dependencia de la característica "Windows Hypervisor Platform" habilitada.
+
+### Hito M12 (en progreso)
+#### M12.1 - Firmware BIOS ROM / boot desde disco en software (completado, scope acotado)
+- `capsule-memory` soporta mapeo ROM (`map_rom`) y regiones ROM de solo lectura; escrituras a ROM se ignoran.
+- `capsule-vmm` expone `map_bios_rom` y `boot_firmware_from_primary_master_disk` (disco IDE primario, BIOS externa opcional o stub integrado, reset minimo RIP/RSP/RFLAGS/DL=0x80).
+- BIOS stub integrado determinista 64 KiB (M12.1, backend software): banner COM1, lee LBA0 via ATA PIO a 0x7C00 y salta al boot sector. No implementa INT BIOS reales; usa modelo plano/ISA soportado por el interprete.
+- `VmConfig.firmware_bios_path`; CLI `capsule.exe test-firmware [bios_path]` valida firma 0x55AA en 0x7C00 y ejecucion del boot sector.
+- `capsule-cpu` amplia ISA minima para firmware/stub (ALU AL,imm8; 0x80 r/m8,imm8; TEST r/m8,r8; CLI/STI/CLD/STD NOP compat; JMP/CALL indirectos FF/4,/2).
+- Validacion: `cargo test --workspace`, `cargo build --release -p capsule-gui`, regresiones CLI relevantes y `test-firmware`.
+- Limitaciones: no SeaBIOS/OVMF completo verificado; sin modo real/segmentacion, IVT/INT, A20, PCI BIOS/DMA/IRQ delivery en CPU, ni ISO/El Torito. BIOS externa experimental/best-effort, soportada solo con caso reproducible validado.
+
+#### M12.2 - ISO/ATAPI CD-ROM boot (pendiente)
+- Objetivo: ATAPI/IDE compatible, ISO9660, El Torito (segun viabilidad) y prueba CLI.
+
+#### M12.3 - OVMF/UEFI (pendiente, condicionado)
+- Objetivo: carga UEFI/OVMF y ruta de boot reproducible. No se declarara soportado sin caso reproducible validado.
+- Bloqueadores: MMIO, IRQ/APIC/IOAPIC, CPU x86_64 mas completa, timers/dispositivos firmware.
