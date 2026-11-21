@@ -360,13 +360,15 @@ impl SimpleVcpu {
                 self.raise_software_interrupt(vec, mem)?;
                 Ok(None)
             }
-            // IRETQ/IRETD (0xCF) - minimal
+            // IRET/IRETD/IRETQ - minimal
             0xCF => {
-                let rip = self.pop_u64(mem)?;
-                let cs = self.pop_u64(mem)?; let _ = cs;
-                let rflags = self.pop_u64(mem)?;
-                self.regs.rip = rip;
-                self.regs.rflags = rflags | FLAG_RESERVED;
+                let size16 = !is_64bit && (operand_size_16 || real_mode);
+                let rip = self.pop_val(mem, size16, is_64bit)?;
+                let cs = self.pop_val(mem, size16, is_64bit)? as u16;
+                let rflags = self.pop_val(mem, size16, is_64bit)?;
+                self.regs.cs = cs;
+                if self.regs.real_mode || (self.regs.cr0 & 1) == 0 { self.regs.cs_base = (cs as u64) << 4; self.regs.rip = rip & 0xFFFF; } else { self.regs.cs_base = 0; self.regs.rip = rip; }
+                self.regs.rflags = (self.regs.rflags & 0xFFFF_0000_0000_0000) | ((rflags | FLAG_RESERVED) & !0x0000_0000_0003_0000);
                 self.regs.interrupts_enabled = (self.regs.rflags & FLAG_IF) != 0;
                 Ok(None)
             }
