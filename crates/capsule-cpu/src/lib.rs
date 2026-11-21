@@ -859,7 +859,9 @@ impl SimpleVcpu {
                     if operand_size_16 { self.regs.cs_base = (sel as u64) << 4; self.regs.rip = off & 0xFFFF; }
                     else { self.regs.cs_base = 0; self.regs.rip = off; }
                 } else {
-                    // Minimal protected-mode model: treat CS selector value*16 as base when no descriptor cache.
+                    // Minimal protected-mode model without descriptor cache:
+                    // treat selector as segment-like base (sel<<4). This is incomplete but avoids
+                    // executing low-memory garbage when BIOS uses 32-bit far jumps before GDT-aware flow.
                     self.regs.cs_base = (sel as u64) << 4;
                     self.regs.rip = if operand_size_16 { off & 0xFFFF } else { off };
                 }
