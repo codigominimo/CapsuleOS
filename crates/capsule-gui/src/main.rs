@@ -1276,9 +1276,10 @@ fn run_test_bundle(bundle_path: Option<&str>) -> Result<(), Box<dyn std::error::
         },
         payload: b"CAPSULE_PAYLOAD_M15_SYNTHETIC_REPEATED_".repeat(128).to_vec(),
         compression: PayloadCompression::Deflate,
+        hmac_key: Some(b"capsuleos-m15-test-key".to_vec()),
     };
     bundle.write_to_file(&path)?;
-    let loaded = CapsuleBundle::read_from_file(&path)?;
+    let loaded = CapsuleBundle::read_from_file_with_key(&path, b"capsuleos-m15-test-key")?;
     assert_eq!(loaded.manifest, bundle.manifest);
     assert_eq!(loaded.payload, bundle.payload);
     assert_eq!(loaded.compression, PayloadCompression::Deflate);
@@ -1290,7 +1291,7 @@ fn run_test_bundle(bundle_path: Option<&str>) -> Result<(), Box<dyn std::error::
     let mut bad = raw.clone();
     let last = bad.len() - 1;
     bad[last] ^= 0x01;
-    assert!(CapsuleBundle::from_bytes(&bad).is_err(), "bundle corrupto debe fallar CRC/validación");
+    assert!(CapsuleBundle::from_bytes(&bad).is_err(), "bundle corrupto debe fallar CRC/SHA256/HMAC/validación");
 
     if bundle_path.is_none() { let _ = std::fs::remove_file(&path); } else { println!("  [INFO] Archivo externo conservado: {}", path.display()); }
 
@@ -1340,6 +1341,7 @@ fn run_test_capsule_build(
         },
         payload,
         compression: PayloadCompression::Deflate,
+        hmac_key: None,
     };
 
     let self_exe = std::env::current_exe()?;

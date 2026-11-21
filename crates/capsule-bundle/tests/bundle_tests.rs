@@ -19,7 +19,7 @@ fn manifest(name: &str) -> CapsuleManifest {
 fn bundle_roundtrip_file() {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let path = std::env::temp_dir().join(format!("capsule_bundle_{nanos}.cap"));
-    let b = CapsuleBundle { manifest: manifest("ubuntu"), payload: b"payload-data".to_vec(), compression: PayloadCompression::None };
+    let b = CapsuleBundle { manifest: manifest("ubuntu"), payload: b"payload-data".to_vec(), compression: PayloadCompression::None, hmac_key: None };
     b.write_to_file(&path).unwrap();
     let b2 = CapsuleBundle::read_from_file(&path).unwrap();
     assert_eq!(b, b2);
@@ -29,7 +29,7 @@ fn bundle_roundtrip_file() {
 #[test]
 fn bundle_roundtrip_deflate_and_crc() {
     let payload = vec![42u8; 4096];
-    let b = CapsuleBundle { manifest: manifest("compressed"), payload: payload.clone(), compression: PayloadCompression::Deflate };
+    let b = CapsuleBundle { manifest: manifest("compressed"), payload: payload.clone(), compression: PayloadCompression::Deflate, hmac_key: None };
     let mut bytes = Vec::new();
     b.write_to_bytes(&mut bytes).unwrap();
     // stored payload should be smaller for repetitive data
@@ -51,9 +51,9 @@ fn bundle_append_to_exe_roundtrip() {
     let fake_exe = dir.join(format!("capsule_fake_{nanos}.exe"));
     let out_exe = dir.join(format!("capsule_out_{nanos}.exe"));
     std::fs::write(&fake_exe, b"MZFAKEEXE").unwrap();
-    let b = CapsuleBundle { manifest: manifest("n"), payload: b"hello".to_vec(), compression: PayloadCompression::Deflate };
+    let b = CapsuleBundle { manifest: manifest("n"), payload: b"hello".to_vec(), compression: PayloadCompression::Deflate, hmac_key: Some(b"test-key".to_vec()) };
     CapsuleBundle::append_to_exe(&fake_exe, &out_exe, &b).unwrap();
-    let found = CapsuleBundle::read_from_appended_exe(&out_exe).unwrap().unwrap();
+    let found = CapsuleBundle::read_from_appended_exe_with_key(&out_exe, Some(b"test-key")).unwrap().unwrap();
     assert_eq!(found.payload, b.payload);
     let _ = std::fs::remove_file(fake_exe);
     let _ = std::fs::remove_file(out_exe);
