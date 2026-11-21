@@ -1,6 +1,6 @@
 //! # capsule-cpu
 //!
-//! Modelo de ejecución de la CPU x86-64, registros arquitecturales y decodificador/ejecutor de instrucciones.
+//! Modelo de ejecuciÃ³n de la CPU x86-64, registros arquitecturales y decodificador/ejecutor de instrucciones.
 
 pub mod flags;
 pub mod modrm;
@@ -11,7 +11,7 @@ pub use modrm::{ModRm, RexPrefix};
 pub use registers::Registers;
 
 use capsule_core::types::GuestAddress;
-use capsule_memory::GuestMemory;
+use capsule_memory::MemoryBus;
 use modrm::OperandLocation;
 use std::fmt;
 
@@ -20,6 +20,9 @@ pub enum CpuExitReason {
     Halt,
     IoIn { port: u16, size: u8 },
     IoOut { port: u16, data: u32, size: u8 },
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, data: u64, size: u8 },
+    Interrupt { vector: u8 },
     InvalidOpcode(u8),
     MemoryFault(String),
 }
@@ -27,18 +30,13 @@ pub enum CpuExitReason {
 impl fmt::Display for CpuExitReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CpuExitReason::Halt => write!(f, "CPU ejecutó HLT"),
-            CpuExitReason::IoIn { port, size } => {
-                write!(f, "E/S Lectura Puerto 0x{:04X} ({} bytes)", port, size)
-            }
-            CpuExitReason::IoOut { port, data, size } => {
-                write!(
-                    f,
-                    "E/S Escritura Puerto 0x{:04X} <- 0x{:X} ({} bytes)",
-                    port, data, size
-                )
-            }
-            CpuExitReason::InvalidOpcode(op) => write!(f, "Opcode no válido: 0x{:02X}", op),
+            CpuExitReason::Halt => write!(f, "CPU ejecut? HLT"),
+            CpuExitReason::IoIn { port, size } => write!(f, "E/S Lectura Puerto 0x{:04X} ({} bytes)", port, size),
+            CpuExitReason::IoOut { port, data, size } => write!(f, "E/S Escritura Puerto 0x{:04X} <- 0x{:X} ({} bytes)", port, data, size),
+            CpuExitReason::MmioRead { addr, size } => write!(f, "MMIO Read 0x{addr:016X} ({size} bytes)"),
+            CpuExitReason::MmioWrite { addr, data, size } => write!(f, "MMIO Write 0x{addr:016X} <- 0x{data:X} ({size} bytes)"),
+            CpuExitReason::Interrupt { vector } => write!(f, "Interrupt vector 0x{vector:02X}"),
+            CpuExitReason::InvalidOpcode(op) => write!(f, "Opcode no v?lido: 0x{:02X}", op),
             CpuExitReason::MemoryFault(msg) => write!(f, "Fallo de memoria: {}", msg),
         }
     }
@@ -59,7 +57,7 @@ impl SimpleVcpu {
     }
 
     /// Empuja un valor de 64 bits en la pila ([RSP - 8] <- val; RSP <- RSP - 8).
-    pub fn push_u64(&mut self, mem: &mut GuestMemory, val: u64) -> Result<(), String> {
+    pub fn push_u64(&mut self, mem: &mut dyn MemoryBus, val: u64) -> Result<(), String> {
         self.regs.rsp = self.regs.rsp.wrapping_sub(8);
         let sp = GuestAddress::new(self.regs.rsp);
         mem.write_bytes(sp, &val.to_le_bytes())
@@ -67,7 +65,7 @@ impl SimpleVcpu {
     }
 
     /// Extrae un valor de 64 bits de la pila (val <- [RSP]; RSP <- RSP + 8).
-    pub fn pop_u64(&mut self, mem: &GuestMemory) -> Result<u64, String> {
+    pub fn pop_u64(&mut self, mem: &mut dyn MemoryBus) -> Result<u64, String> {
         let sp = GuestAddress::new(self.regs.rsp);
         let val = mem
             .read_u64(sp)
@@ -76,9 +74,9 @@ impl SimpleVcpu {
         Ok(val)
     }
 
-    /// Ejecuta una sola instrucción en memoria física a partir de `regs.rip`.
-    pub fn step(&mut self, mem: &mut GuestMemory) -> Result<Option<CpuExitReason>, String> {
-        // 1. Decodificar prefijos legacy/REX (soporte mínimo: 0x66 operand-size)
+    /// Ejecuta una sola instrucciÃ³n en memoria fÃ­sica a partir de `regs.rip`.
+    pub fn step(&mut self, mem: &mut dyn MemoryBus) -> Result<Option<CpuExitReason>, String> {
+        // 1. Decodificar prefijos legacy/REX (soporte mÃ­nimo: 0x66 operand-size)
         let mut operand_size_16 = false;
         let mut rex = RexPrefix::default();
         let mut opcode = mem
@@ -103,6 +101,12 @@ impl SimpleVcpu {
 
         self.regs.rip += 1;
         let is_64bit = rex.w;
+
+        if opcode == 0x0F {
+            let op2 = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+            self.regs.rip += 1;
+            return self.step_0f(op2, &rex, is_64bit, mem);
+        }
 
         match opcode {
             // NOP
@@ -158,8 +162,32 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
-            // CLI/STI/CLD/STD (flags de control no modeladas; tratados como NOP para compatibilidad de firmware)
-            0xFA | 0xFB | 0xFC | 0xFD => Ok(None),
+            // CLI/STI
+            0xFA => { self.regs.interrupts_enabled = false; Ok(None) }
+            0xFB => { self.regs.interrupts_enabled = true; Ok(None) }
+            // CLD/STD (DF not modeled; NOP compat)
+            0xFC | 0xFD => Ok(None),
+
+            // INT imm8
+            0xCD => {
+                let vec = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                self.raise_software_interrupt(vec, mem)?;
+                Ok(None)
+            }
+            // IRETQ/IRETD (0xCF) - minimal
+            0xCF => {
+                let rip = self.pop_u64(mem)?;
+                let cs = self.pop_u64(mem)?; let _ = cs;
+                let rflags = self.pop_u64(mem)?;
+                self.regs.rip = rip;
+                self.regs.rflags = rflags | FLAG_RESERVED;
+                self.regs.interrupts_enabled = (self.regs.rflags & FLAG_IF) != 0;
+                Ok(None)
+            }
+
+            // LIDT/SGDT/etc (0x0F 01 /2 /3 minimal) - handled before this block? no: 0x0F prefix not handled here
+
 
             // MOV r32/r64, imm32/imm64 (0xB8..=0xBF)
             0xB8..=0xBF => {
@@ -389,7 +417,7 @@ impl SimpleVcpu {
                             update_sub_flags_u32(&mut self.regs.rflags, dst_val as u32, imm as u32, res);
                         }
                     }
-                    other => return Err(format!("Operación grupo 0x81/0x83 /{} no soportada", other)),
+                    other => return Err(format!("OperaciÃ³n grupo 0x81/0x83 /{} no soportada", other)),
                 }
                 Ok(None)
             }
@@ -504,7 +532,7 @@ impl SimpleVcpu {
                         // JMP r/m (near, indirect)
                         self.regs.rip = val;
                     }
-                    other => return Err(format!("Operación 0xFF /{} no implementada", other)),
+                    other => return Err(format!("OperaciÃ³n 0xFF /{} no implementada", other)),
                 }
                 Ok(None)
             }
@@ -545,7 +573,7 @@ impl SimpleVcpu {
             0xE8 => {
                 let rel32 = mem.read_u32(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i32;
                 self.regs.rip += 4;
-                // Empujar la dirección de retorno en la pila
+                // Empujar la direcciÃ³n de retorno en la pila
                 let ret_addr = self.regs.rip;
                 self.push_u64(mem, ret_addr)?;
                 // Saltar al destino
@@ -667,5 +695,106 @@ impl SimpleVcpu {
 
             other => Ok(Some(CpuExitReason::InvalidOpcode(other))),
         }
+    }
+}
+
+impl SimpleVcpu {
+    fn step_0f(&mut self, op2: u8, rex: &RexPrefix, is_64bit: bool, mem: &mut dyn MemoryBus) -> Result<Option<CpuExitReason>, String> {
+        match op2 {
+            // LIDT / SIDT (0F 01 /2 /3) - minimal support
+            0x01 => {
+                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let modrm = ModRm::parse(modrm_byte, rex);
+                let rm_loc = OperandLocation::resolve_rm(&modrm, rex, &mut self.regs, mem)?;
+                match modrm.reg & 0x07 {
+                    2 => { // LGDT - accept and ignore (minimal)
+                        let _ = rm_loc.read_val(is_64bit, &self.regs, mem)?;
+                        Ok(None)
+                    }
+                    3 => { // LIDT
+                        let addr = match rm_loc { OperandLocation::Memory(a) => a, _ => return Err("LIDT requires memory operand".into()) };
+                        let mut buf = [0u8; 10];
+                        mem.read_bytes(addr, &mut buf).map_err(|e| e.to_string())?;
+                        self.regs.idtr.limit = u16::from_le_bytes([buf[0], buf[1]]);
+                        self.regs.idtr.base = u64::from_le_bytes([buf[2],buf[3],buf[4],buf[5],buf[6],buf[7],buf[8],buf[9]]);
+                        Ok(None)
+                    }
+                    0 => { // SGDT - write pseudo descriptor (minimal zero)
+                        if let OperandLocation::Memory(a) = rm_loc {
+                            let mut buf = [0u8; 10];
+                            mem.write_bytes(a, &buf).map_err(|e| e.to_string())?;
+                        }
+                        Ok(None)
+                    }
+                    1 => { // SIDT
+                        if let OperandLocation::Memory(a) = rm_loc {
+                            let mut buf = [0u8; 10];
+                            buf[0..2].copy_from_slice(&self.regs.idtr.limit.to_le_bytes());
+                            buf[2..10].copy_from_slice(&self.regs.idtr.base.to_le_bytes());
+                            mem.write_bytes(a, &buf).map_err(|e| e.to_string())?;
+                        }
+                        Ok(None)
+                    }
+                    _ => Ok(None), // other 0F 01 subops ignored
+                }
+            }
+            // MOV r32/64, CRn (0F 20) / MOV CRn, r32/64 (0F 22) - minimal CR0/CR3 stubs
+            0x20 | 0x22 => {
+                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
+                self.regs.rip += 1;
+                let modrm = ModRm::parse(modrm_byte, rex);
+                // ignore control regs in this minimal model
+                let _ = (op2, modrm, is_64bit);
+                Ok(None)
+            }
+            // WRMSR/RDMSR minimal no-op/fault-safe stubs
+            0x30 | 0x32 => Ok(None),
+            _ => Ok(Some(CpuExitReason::InvalidOpcode(0x0F))),
+        }
+    }
+
+    pub fn raise_software_interrupt(&mut self, vector: u8, mem: &mut dyn MemoryBus) -> Result<(), String> {
+        self.deliver_interrupt(vector, mem, true)
+    }
+
+    pub fn deliver_external_interrupt(&mut self, vector: u8, mem: &mut dyn MemoryBus) -> Result<bool, String> {
+        if !self.regs.interrupts_enabled { return Ok(false); }
+        self.deliver_interrupt(vector, mem, false)?;
+        Ok(true)
+    }
+
+    fn deliver_interrupt(&mut self, vector: u8, mem: &mut dyn MemoryBus, _software: bool) -> Result<(), String> {
+        let base = self.regs.idtr.base;
+        let limit = self.regs.idtr.limit as u64;
+        let off = (vector as u64) * 16;
+        if base == 0 || off + 16 > limit.saturating_add(1) {
+            // No IDT configured: emulate as immediate halt for deterministic test/firmware stubs
+            self.regs.rip = self.regs.rip; // no-op
+            return Err(format!("IDT not configured for vector 0x{vector:02X}"));
+        }
+        let entry_addr = GuestAddress::new(base + off);
+        let mut entry = [0u8; 16];
+        mem.read_bytes(entry_addr, &mut entry).map_err(|e| e.to_string())?;
+        let off_lo = u16::from_le_bytes([entry[0], entry[1]]) as u64;
+        let selector = u16::from_le_bytes([entry[2], entry[3]]) as u64;
+        let _ist_type = entry[4];
+        let attr = entry[5];
+        let present = (attr & 0x80) != 0;
+        let off_mid = u16::from_le_bytes([entry[6], entry[7]]) as u64;
+        let off_hi = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as u64;
+        let handler = off_lo | (off_mid << 16) | (off_hi << 32);
+        if !present || handler == 0 {
+            return Err(format!("IDT entry not present for vector 0x{vector:02X}"));
+        }
+        // push rflags, cs(dummy), rip
+        let rflags = self.regs.rflags | FLAG_IF;
+        self.push_u64(mem, rflags)?;
+        self.push_u64(mem, selector)?;
+        self.push_u64(mem, self.regs.rip)?;
+        self.regs.interrupts_enabled = false;
+        self.regs.rflags &= !FLAG_IF;
+        self.regs.rip = handler;
+        Ok(())
     }
 }

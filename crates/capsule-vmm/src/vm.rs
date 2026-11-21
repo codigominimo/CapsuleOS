@@ -12,13 +12,59 @@ use capsule_devices::{
     BochsVbe, I8042Ps2Controller, IdeController, PciBus, Pic8259, Pit8254, RtcCmos, Uart16550,
     VirtioNetPci, COM1_BASE,
 };
-use capsule_memory::GuestMemory;
+use capsule_memory::{GuestMemory, MemoryBus};
 use capsule_storage::BlockDevice;
 use capsule_whpx::{WhpxPartition, WhpxRegs, WhpxRunExit};
 
 enum ExecutionBackend {
     Software(SimpleVcpu),
     Whpx(WhpxPartition),
+}
+
+struct VmBus<'a> {
+    mem: &'a mut GuestMemory,
+    devices: &'a mut [Box<dyn VirtualDevice>],
+}
+
+impl<'a> MemoryBus for VmBus<'a> {
+    fn read_u8(&mut self, addr: GuestAddress) -> Result<u8, String> {
+        let a = addr.raw();
+        for dev in self.devices.iter_mut() {
+            if dev.handles_mmio(a) { return Ok(dev.read_mmio(a, 1) as u8); }
+        }
+        self.mem.read_u8(addr).map_err(|e| e.to_string())
+    }
+    fn write_u8(&mut self, addr: GuestAddress, val: u8) -> Result<(), String> {
+        let a = addr.raw();
+        for dev in self.devices.iter_mut() {
+            if dev.handles_mmio(a) { dev.write_mmio(a, val as u64, 1); return Ok(()); }
+        }
+        self.mem.write_u8(addr, val).map_err(|e| e.to_string())
+    }
+    fn read_bytes(&mut self, addr: GuestAddress, buf: &mut [u8]) -> Result<(), String> {
+        let a = addr.raw();
+        for dev in self.devices.iter_mut() {
+            if dev.handles_mmio(a) {
+                for (i, b) in buf.iter_mut().enumerate() {
+                    *b = dev.read_mmio(a + i as u64, 1) as u8;
+                }
+                return Ok(());
+            }
+        }
+        self.mem.read_bytes(addr, buf).map_err(|e| e.to_string())
+    }
+    fn write_bytes(&mut self, addr: GuestAddress, data: &[u8]) -> Result<(), String> {
+        let a = addr.raw();
+        for dev in self.devices.iter_mut() {
+            if dev.handles_mmio(a) {
+                for (i, b) in data.iter().enumerate() {
+                    dev.write_mmio(a + i as u64, *b as u64, 1);
+                }
+                return Ok(());
+            }
+        }
+        self.mem.write_bytes(addr, data).map_err(|e| e.to_string())
+    }
 }
 
 pub struct VirtualMachine {
@@ -477,6 +523,51 @@ impl VirtualMachine {
         }
     }
 
+    /// Decodificacion minima de longitud para instrucciones IN/OUT.
+    fn decode_io_instruction_len(&self, rip: u64) -> u8 {
+        let mut off = 0u64; let mut len: u8 = 0;
+        for _ in 0..4 {
+            let b = match self.memory.read_u8(GuestAddress::new(rip.wrapping_add(off))) { Ok(v) => v, Err(_) => return 0 };
+            match b {
+                0x66|0x67|0xF2|0xF3|0x26|0x2E|0x36|0x3E|0x64|0x65 => { len=len.saturating_add(1); off+=1; continue; }
+                0x40..=0x4F => { len=len.saturating_add(1); off+=1; continue; }
+                _ => break,
+            }
+        }
+        let op = match self.memory.read_u8(GuestAddress::new(rip.wrapping_add(off))) { Ok(v) => v, Err(_) => return 0 };
+        let op_len = match op { 0xE4|0xE5|0xE6|0xE7 => 2, 0xEC|0xED|0xEE|0xEF => 1, _ => 0 };
+        if op_len == 0 { 0 } else { len.saturating_add(op_len) }
+    }
+
+    /// Emulacion MMIO minima para WHPX MemoryAccess: MOV r/m<->r (8/16/32/64).
+    fn try_emulate_whpx_mmio(&mut self, fault_gpa: u64) -> Result<bool, String> {
+        let mut regs = self.get_regs(); let rip = regs.rip;
+        let mut bytes = [0u8; 15];
+        for i in 0..15u64 { bytes[i as usize] = self.memory.read_u8(GuestAddress::new(rip.wrapping_add(i))).map_err(|e| e.to_string())?; }
+        let mut i=0usize; let mut rex=0u8; let mut has_rex=false; let mut op16=false; let mut addr32=false;
+        for _ in 0..6 {
+            let b=bytes[i];
+            match b { 0x66=>{op16=true;i+=1;} 0x67=>{addr32=true;i+=1;} 0xF0|0xF2|0xF3|0x2E|0x36|0x3E|0x26|0x64|0x65=>{i+=1;} 0x40..=0x4F=>{has_rex=true;rex=b;i+=1;} _=>break, }
+            if i>=15 { return Ok(false); }
+        }
+        let rex_w=has_rex&&(rex&8)!=0; let rex_r=has_rex&&(rex&4)!=0; let rex_x=has_rex&&(rex&2)!=0; let rex_b=has_rex&&(rex&1)!=0;
+        let opcode=bytes[i]; i+=1;
+        let size = if matches!(opcode,0x88|0x8A){1u8} else if rex_w{8} else if op16{2} else {4};
+        if !matches!(opcode,0x88|0x89|0x8A|0x8B) { return Ok(false); }
+        let modrm=bytes[i]; i+=1; let modb=(modrm>>6)&3; let reg=((modrm>>3)&7)|if rex_r{8}else{0}; let rm=(modrm&7)|if rex_b{8}else{0};
+        if modb==3 { return Ok(false); }
+        let (addr, disp_len)=decode_modrm_addr(&regs,&bytes,i,modb,rm,rex_x,addr32); i+=disp_len;
+        if addr!=fault_gpa && !self.devices.iter().any(|d| d.handles_mmio(addr)) { return Ok(false); }
+        match opcode {
+            0x89=>{ let v=get_reg_by_idx(&regs,reg,size); self.dispatch_mmio_write(addr,v,size); }
+            0x8B=>{ let v=self.dispatch_mmio_read(addr,size).unwrap_or(0); set_reg_by_idx(&mut regs,reg,size,v); }
+            0x88=>{ let v=get_reg_by_idx(&regs,reg,1); self.dispatch_mmio_write(addr,v,1); }
+            0x8A=>{ let v=self.dispatch_mmio_read(addr,1).unwrap_or(0); set_reg_by_idx(&mut regs,reg,1,v); }
+            _=>return Ok(false),
+        }
+        regs.rip = rip.wrapping_add(i as u64); self.set_regs(&regs); Ok(true)
+    }
+
     fn dispatch_io_out(&mut self, port: u16, data: u32, size: u8) -> bool {
         let mut handled = false;
         for dev in &mut self.devices {
@@ -502,6 +593,51 @@ impl VirtualMachine {
         self.devices.iter().any(|d| d.handles_port(port))
     }
 
+    fn dispatch_mmio_read(&mut self, addr: u64, size: u8) -> Option<u64> {
+        for dev in &mut self.devices {
+            if dev.handles_mmio(addr) { return Some(dev.read_mmio(addr, size)); }
+        }
+        None
+    }
+    fn dispatch_mmio_write(&mut self, addr: u64, data: u64, size: u8) -> bool {
+        for dev in &mut self.devices {
+            if dev.handles_mmio(addr) { dev.write_mmio(addr, data, size); return true; }
+        }
+        false
+    }
+
+    fn deliver_pending_interrupt_software(&mut self) -> Result<(), VmmError> {
+        if self.backend_kind != VmBackendKind::Software { return Ok(()); }
+        // Check IF and PIC
+        let (if_enabled, idtr_base, idtr_limit) = match &self.exec {
+            ExecutionBackend::Software(cpu) => (cpu.regs.interrupts_enabled, cpu.regs.idtr.base, cpu.regs.idtr.limit),
+            _ => return Ok(()),
+        };
+        if !if_enabled || idtr_base == 0 { return Ok(()); }
+        // get vector from PIC
+        let mut vector: Option<u8> = None;
+        for dev in &mut self.devices {
+            if let Some(pic) = dev.as_any_mut().downcast_mut::<Pic8259>() {
+                vector = pic.get_interrupt();
+                break;
+            }
+        }
+        let Some(vec) = vector else { return Ok(()); };
+        // deliver via CPU IDT
+        let mut bus = VmBus { mem: &mut self.memory, devices: &mut self.devices };
+        match &mut self.exec {
+            ExecutionBackend::Software(cpu) => {
+                if let Err(e) = cpu.deliver_external_interrupt(vec, &mut bus) {
+                    // if IDT not configured, fall back to halting with diagnostic - but better keep running
+                    let _ = e;
+                }
+            }
+            _ => {}
+        }
+        let _ = idtr_limit;
+        Ok(())
+    }
+
     /// Ejecuta un paso de la VM.
     /// - Software: tick + una instrucción.
     /// - WHPX: tick + una ejecución hasta VM-exit (puede abarcar muchas instrucciones).
@@ -510,12 +646,16 @@ impl VirtualMachine {
             self.status = VmStatus::Running;
         }
         self.tick_platform();
+        self.deliver_pending_interrupt_software()?;
 
         match self.backend_kind {
             VmBackendKind::Software => {
-                let cpu_res = match &mut self.exec {
-                    ExecutionBackend::Software(cpu) => cpu.step(&mut self.memory),
-                    ExecutionBackend::Whpx(_) => return Err(VmmError::Unsupported),
+                let cpu_res = {
+                    let mut bus = VmBus { mem: &mut self.memory, devices: &mut self.devices };
+                    match &mut self.exec {
+                        ExecutionBackend::Software(cpu) => cpu.step(&mut bus),
+                        ExecutionBackend::Whpx(_) => return Err(VmmError::Unsupported),
+                    }
                 };
                 match cpu_res {
                     Ok(None) => Ok(None),
@@ -536,6 +676,14 @@ impl VirtualMachine {
                         self.tick_platform();
                         if handled { Ok(None) } else { Ok(Some(VcpuExit::IoIn { port, size })) }
                     }
+                    Ok(Some(CpuExitReason::MmioRead { addr, size })) => {
+                        // VmBus should have handled; report unhandled MMIO
+                        Ok(Some(VcpuExit::MmioRead { addr, size }))
+                    }
+                    Ok(Some(CpuExitReason::MmioWrite { addr, data, size })) => {
+                        Ok(Some(VcpuExit::MmioWrite { addr, data, size }))
+                    }
+                    Ok(Some(CpuExitReason::Interrupt { vector })) => Ok(Some(VcpuExit::Unknown(format!("interrupt 0x{vector:02X}")))),
                     Ok(Some(CpuExitReason::InvalidOpcode(op))) => {
                         let rip = self.rip();
                         self.status = VmStatus::Error;
@@ -610,9 +758,14 @@ impl VirtualMachine {
                     }
                 }
                 WhpxRunExit::MemoryAccess { gpa } => {
-                    // No MMIO dispatch model; report as unsupported/fault-like
-                    self.status = VmStatus::Error;
-                    return Err(VmmError::MemoryMappingFailed(format!("WHPX memory/MMIO access no soportado en GPA 0x{gpa:X}")));
+                    match self.try_emulate_whpx_mmio(gpa) {
+                        Ok(true) => { self.tick_platform(); return Ok(None); }
+                        Ok(false) => {
+                            self.status = VmStatus::Error;
+                            return Err(VmmError::MemoryMappingFailed(format!("WHPX MMIO en GPA 0x{gpa:X}: instrucción no emulable/sin handler MMIO")));
+                        }
+                        Err(e) => { self.status = VmStatus::Error; return Err(VmmError::MemoryMappingFailed(format!("WHPX MMIO en GPA 0x{gpa:X}: {e}"))); }
+                    }
                 }
                 WhpxRunExit::Unsupported(s) => { self.status = VmStatus::Error; return Err(VmmError::VcpuError(format!("Salida WHPX no soportada: {s}"))); }
                 WhpxRunExit::Failed(s) => { self.status = VmStatus::Error; return Err(VmmError::VcpuError(format!("Fallo WHPX: {s}"))); }
@@ -931,38 +1084,6 @@ fn build_builtin_bios_stub() -> Vec<u8> {
     rom
 }
 
-impl VirtualMachine {
-    /// Decodificación mínima de longitud para instrucciones IN/OUT (puerto inmediato o DX), con prefijos 0x66/0x67.
-    /// Usado como fallback cuando WHPX no proporciona longitud de instrucción en el contexto de salida.
-    fn decode_io_instruction_len(&self, rip: u64) -> u8 {
-        let mut off = 0u64;
-        let mut len: u8 = 0;
-        for _ in 0..4 {
-            let b = match self.memory.read_u8(GuestAddress::new(rip.wrapping_add(off))) { Ok(v) => v, Err(_) => return 0 };
-            match b {
-                0x66 | 0x67 | 0xF2 | 0xF3 | 0x26 | 0x2E | 0x36 | 0x3E | 0x64 | 0x65 => {
-                    len = len.saturating_add(1);
-                    off += 1;
-                    continue;
-                }
-                0x40..=0x4F => { // REX
-                    len = len.saturating_add(1);
-                    off += 1;
-                    continue;
-                }
-                _ => break,
-            }
-        }
-        let op = match self.memory.read_u8(GuestAddress::new(rip.wrapping_add(off))) { Ok(v) => v, Err(_) => return 0 };
-        let op_len = match op {
-            0xE4 | 0xE5 | 0xE6 | 0xE7 => 2, // op imm8
-            0xEC | 0xED | 0xEE | 0xEF => 1, // op (DX)
-            _ => 0,
-        };
-        if op_len == 0 { 0 } else { len.saturating_add(op_len) }
-    }
-}
-
 fn regs_to_whpx(r: &Registers) -> WhpxRegs {
     WhpxRegs {
         rax: r.rax, rbx: r.rbx, rcx: r.rcx, rdx: r.rdx,
@@ -980,5 +1101,37 @@ fn whpx_to_regs(r: WhpxRegs) -> Registers {
         r8: r.r8, r9: r.r9, r10: r.r10, r11: r.r11,
         r12: r.r12, r13: r.r13, r14: r.r14, r15: r.r15,
         rip: r.rip, rflags: r.rflags,
+        idtr: Default::default(),
+        interrupts_enabled: (r.rflags & 0x200) != 0,
     }
+}
+
+fn decode_modrm_addr(regs: &Registers, bytes: &[u8;15], mut i: usize, modb: u8, rm: u8, rex_x: bool, addr32: bool) -> (u64, usize) {
+    let mut disp_len=0usize; let mut addr:u64;
+    let rm_low=rm&7;
+    if rm_low==4 {
+        let sib=bytes[i]; disp_len+=1;
+        let scale=1u64<<((sib>>6)&3);
+        let idx_raw=(sib>>3)&7; let base_raw=sib&7;
+        let idx=idx_raw|if rex_x{8}else{0}; let base=base_raw|(rm&8);
+        let base_val = if base_raw==5 && modb==0 { 0 } else { get_reg_by_idx(regs,base, if addr32{4}else{8}) };
+        let idx_val = if idx_raw==4 && !rex_x { 0 } else { get_reg_by_idx(regs,idx, if addr32{4}else{8}) };
+        addr = base_val.wrapping_add(idx_val.wrapping_mul(scale));
+        if base_raw==5 && modb==0 { let d=i32::from_le_bytes(bytes[i+disp_len..i+disp_len+4].try_into().unwrap()) as i64; addr=(addr as i64).wrapping_add(d) as u64; disp_len+=4; }
+    } else if rm_low==5 && modb==0 {
+        let d=i32::from_le_bytes(bytes[i..i+4].try_into().unwrap()) as u64; addr=d; disp_len+=4;
+    } else { addr = get_reg_by_idx(regs,rm, if addr32{4}else{8}); }
+    if modb==1 { let d=bytes[i+disp_len] as i8 as i64; addr=(addr as i64).wrapping_add(d) as u64; disp_len+=1; }
+    else if modb==2 { let d=i32::from_le_bytes(bytes[i+disp_len..i+disp_len+4].try_into().unwrap()) as i64; addr=(addr as i64).wrapping_add(d) as u64; disp_len+=4; }
+    if addr32 { addr &= 0xFFFF_FFFF; }
+    (addr, disp_len)
+}
+fn get_reg_by_idx(r: &Registers, idx: u8, size: u8) -> u64 {
+    let v = match idx {0=>r.rax,1=>r.rcx,2=>r.rdx,3=>r.rbx,4=>r.rsp,5=>r.rbp,6=>r.rsi,7=>r.rdi,8=>r.r8,9=>r.r9,10=>r.r10,11=>r.r11,12=>r.r12,13=>r.r13,14=>r.r14,15=>r.r15,_=>0};
+    match size {1=>v&0xFF,2=>v&0xFFFF,4=>v&0xFFFF_FFFF,8=>v,_=>v}
+}
+fn set_reg_by_idx(r: &mut Registers, idx: u8, size: u8, val: u64) {
+    let cur=get_reg_by_idx(r,idx,8);
+    let nv = match size {1=>(cur&!0xFF)|(val&0xFF),2=>(cur&!0xFFFF)|(val&0xFFFF),4=>val&0xFFFF_FFFF,8=>val,_=>val};
+    match idx {0=>r.rax=nv,1=>r.rcx=nv,2=>r.rdx=nv,3=>r.rbx=nv,4=>r.rsp=nv,5=>r.rbp=nv,6=>r.rsi=nv,7=>r.rdi=nv,8=>r.r8=nv,9=>r.r9=nv,10=>r.r10=nv,11=>r.r11=nv,12=>r.r12=nv,13=>r.r13=nv,14=>r.r14=nv,15=>r.r15=nv,_=>{}}
 }

@@ -13,6 +13,11 @@ pub trait VirtualDevice: Send + Any {
     /// Avanza el estado interno del dispositivo (timers, contadores, etc.).
     /// `cycles` representa pasos/ciclos aproximados de la vCPU desde el último tick.
     fn tick(&mut self, _cycles: u64) {}
+
+    // MMIO (Memory-Mapped I/O). Por defecto no manejado.
+    fn handles_mmio(&self, _addr: u64) -> bool { false }
+    fn read_mmio(&mut self, _addr: u64, _size: u8) -> u64 { 0 }
+    fn write_mmio(&mut self, _addr: u64, _data: u64, _size: u8) {}
 }
 
 /// Implementación del trait VirtualDevice para el controlador serie UART 16550 estándar.

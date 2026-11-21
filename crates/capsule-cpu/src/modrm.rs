@@ -1,16 +1,16 @@
-//! Decodificación de ModR/M, prefijo REX y modos de direccionamiento de x86-64.
+﻿//! DecodificaciÃ³n de ModR/M, prefijo REX y modos de direccionamiento de x86-64.
 
 use crate::registers::Registers;
 use capsule_core::types::GuestAddress;
-use capsule_memory::GuestMemory;
+use capsule_memory::MemoryBus;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RexPrefix {
     pub present: bool,
     pub w: bool, // Operando de 64 bits si true
-    pub r: bool, // Extensión del campo 'reg' (+8)
-    pub x: bool, // Extensión del campo 'index' de SIB (+8)
-    pub b: bool, // Extensión del campo 'r/m' o 'base' (+8)
+    pub r: bool, // ExtensiÃ³n del campo 'reg' (+8)
+    pub x: bool, // ExtensiÃ³n del campo 'index' de SIB (+8)
+    pub b: bool, // ExtensiÃ³n del campo 'r/m' o 'base' (+8)
 }
 
 impl RexPrefix {
@@ -60,7 +60,7 @@ impl OperandLocation {
         modrm: &ModRm,
         rex: &RexPrefix,
         regs: &mut Registers,
-        mem: &GuestMemory,
+        mem: &mut dyn MemoryBus,
     ) -> Result<Self, String> {
         if modrm.mode == 3 {
             Ok(OperandLocation::Register(modrm.rm))
@@ -132,7 +132,7 @@ impl OperandLocation {
     }
 
     /// Lee un byte del operando (modo 8 bits).
-    pub fn read_u8(&self, rex: &RexPrefix, regs: &Registers, mem: &GuestMemory) -> Result<u8, String> {
+    pub fn read_u8(&self, rex: &RexPrefix, regs: &Registers, mem: &mut dyn MemoryBus) -> Result<u8, String> {
         match *self {
             OperandLocation::Register(reg) => Ok(regs.get_reg8(reg, rex.present)),
             OperandLocation::Memory(addr) => {
@@ -142,7 +142,7 @@ impl OperandLocation {
     }
 
     /// Escribe un byte en el operando (modo 8 bits).
-    pub fn write_u8(&self, val: u8, rex: &RexPrefix, regs: &mut Registers, mem: &mut GuestMemory) -> Result<(), String> {
+    pub fn write_u8(&self, val: u8, rex: &RexPrefix, regs: &mut Registers, mem: &mut dyn MemoryBus) -> Result<(), String> {
         match *self {
             OperandLocation::Register(reg) => {
                 regs.set_reg8(reg, val, rex.present);
@@ -158,7 +158,7 @@ impl OperandLocation {
         &self,
         is_64bit: bool,
         regs: &Registers,
-        mem: &GuestMemory,
+        mem: &mut dyn MemoryBus,
     ) -> Result<u64, String> {
         match *self {
             OperandLocation::Register(reg) => {
@@ -186,7 +186,7 @@ impl OperandLocation {
         val: u64,
         is_64bit: bool,
         regs: &mut Registers,
-        mem: &mut GuestMemory,
+        mem: &mut dyn MemoryBus,
     ) -> Result<(), String> {
         match *self {
             OperandLocation::Register(reg) => {

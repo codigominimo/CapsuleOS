@@ -16,6 +16,27 @@ pub enum MemoryError {
     InvalidAccess(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BusError {
+    Fault(String),
+    MmioRead { addr: u64, size: u8 },
+    MmioWrite { addr: u64, data: u64, size: u8 },
+}
+
+impl fmt::Display for BusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BusError::Fault(s) => write!(f, "{s}"),
+            BusError::MmioRead { addr, size } => write!(f, "MMIO read 0x{addr:X} size={size}"),
+            BusError::MmioWrite { addr, data, size } => write!(f, "MMIO write 0x{addr:X} data=0x{data:X} size={size}"),
+        }
+    }
+}
+
+impl From<MemoryError> for BusError {
+    fn from(e: MemoryError) -> Self { BusError::Fault(e.to_string()) }
+}
+
 impl fmt::Display for MemoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -246,4 +267,22 @@ impl Drop for GuestMemory {
             }
         }
     }
+}
+
+// Interfaz minima de acceso a memoria para CPU/VMM. Permite despachar MMIO desde el VMM.
+pub trait MemoryBus {
+    fn read_u8(&mut self, addr: GuestAddress) -> Result<u8, String>;
+    fn write_u8(&mut self, addr: GuestAddress, val: u8) -> Result<(), String>;
+    fn read_bytes(&mut self, addr: GuestAddress, buf: &mut [u8]) -> Result<(), String>;
+    fn write_bytes(&mut self, addr: GuestAddress, data: &[u8]) -> Result<(), String>;
+    fn read_u16(&mut self, addr: GuestAddress) -> Result<u16, String> { let mut b=[0u8;2]; self.read_bytes(addr,&mut b)?; Ok(u16::from_le_bytes(b)) }
+    fn read_u32(&mut self, addr: GuestAddress) -> Result<u32, String> { let mut b=[0u8;4]; self.read_bytes(addr,&mut b)?; Ok(u32::from_le_bytes(b)) }
+    fn read_u64(&mut self, addr: GuestAddress) -> Result<u64, String> { let mut b=[0u8;8]; self.read_bytes(addr,&mut b)?; Ok(u64::from_le_bytes(b)) }
+}
+
+impl MemoryBus for GuestMemory {
+    fn read_u8(&mut self, addr: GuestAddress) -> Result<u8, String> { GuestMemory::read_u8(self, addr).map_err(|e| e.to_string()) }
+    fn write_u8(&mut self, addr: GuestAddress, val: u8) -> Result<(), String> { GuestMemory::write_u8(self, addr, val).map_err(|e| e.to_string()) }
+    fn read_bytes(&mut self, addr: GuestAddress, buf: &mut [u8]) -> Result<(), String> { GuestMemory::read_bytes(self, addr, buf).map_err(|e| e.to_string()) }
+    fn write_bytes(&mut self, addr: GuestAddress, data: &[u8]) -> Result<(), String> { GuestMemory::write_bytes(self, addr, data).map_err(|e| e.to_string()) }
 }

@@ -3,20 +3,24 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 pub const MAGIC: &[u8; 8] = b"CAPSULE\0";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+pub const VERSION_V1: u32 = 1;
 pub const EXE_FOOTER_MAGIC: &[u8; 8] = b"CAPSLEXE";
 pub const EXE_FOOTER_LEN: usize = 24; // magic(8) + bundle_len(u64) + version(u32) + reserved(u32)
+pub const HEADER_LEN: usize = 56; // magic8 + ver4 + comp4 + manifest_len8 + payload_stored8 + payload_uncompressed8 + manifest_crc4 + payload_crc4 + header_flags4 + reserved4
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum PayloadCompression {
     None = 0,
+    Deflate = 1,
 }
 
 impl PayloadCompression {
     fn from_u32(v: u32) -> Result<Self, String> {
         match v {
             0 => Ok(Self::None),
+            1 => Ok(Self::Deflate),
             _ => Err(format!("unsupported compression {v}")),
         }
     }
@@ -29,6 +33,10 @@ pub struct CapsuleManifest {
     pub backend: String,
     pub memory_mib: u32,
     pub vcpus: u32,
+    pub payload_kind: String, // raw-disk|linux-kernel|boot-sector|opaque
+    pub kernel_cmdline: Option<String>,
+    pub initrd_bytes: Option<u64>,
+    pub disk_sector_size: Option<u32>,
 }
 
 impl CapsuleManifest {
@@ -39,6 +47,10 @@ impl CapsuleManifest {
         push_kv(&mut out, "backend", &self.backend);
         push_kv(&mut out, "memory_mib", &self.memory_mib.to_string());
         push_kv(&mut out, "vcpus", &self.vcpus.to_string());
+        push_kv(&mut out, "payload_kind", &self.payload_kind);
+        if let Some(v) = &self.kernel_cmdline { push_kv(&mut out, "kernel_cmdline", v); }
+        if let Some(v) = self.initrd_bytes { push_kv(&mut out, "initrd_bytes", &v.to_string()); }
+        if let Some(v) = self.disk_sector_size { push_kv(&mut out, "disk_sector_size", &v.to_string()); }
         out
     }
 
@@ -49,6 +61,10 @@ impl CapsuleManifest {
         let mut backend = None;
         let mut memory_mib = None;
         let mut vcpus = None;
+        let mut payload_kind = None;
+        let mut kernel_cmdline = None;
+        let mut initrd_bytes = None;
+        let mut disk_sector_size = None;
         for line in s.lines() {
             if line.trim().is_empty() { continue; }
             let (k, v) = line.split_once('=').ok_or_else(|| format!("manifest line: {line}"))?;
@@ -58,6 +74,10 @@ impl CapsuleManifest {
                 "backend" => backend = Some(v.to_string()),
                 "memory_mib" => memory_mib = Some(v.parse::<u32>().map_err(|e| e.to_string())?),
                 "vcpus" => vcpus = Some(v.parse::<u32>().map_err(|e| e.to_string())?),
+                "payload_kind" => payload_kind = Some(v.to_string()),
+                "kernel_cmdline" => kernel_cmdline = Some(v.to_string()),
+                "initrd_bytes" => initrd_bytes = Some(v.parse::<u64>().map_err(|e| e.to_string())?),
+                "disk_sector_size" => disk_sector_size = Some(v.parse::<u32>().map_err(|e| e.to_string())?),
                 _ => {}
             }
         }
@@ -67,6 +87,10 @@ impl CapsuleManifest {
             backend: backend.ok_or("manifest missing backend")?,
             memory_mib: memory_mib.ok_or("manifest missing memory_mib")?,
             vcpus: vcpus.ok_or("manifest missing vcpus")?,
+            payload_kind: payload_kind.unwrap_or_else(|| "opaque".to_string()),
+            kernel_cmdline,
+            initrd_bytes,
+            disk_sector_size,
         })
     }
 }
@@ -99,22 +123,52 @@ impl CapsuleBundle {
     }
 
     pub fn from_bytes(buf: &[u8]) -> Result<Self, String> {
-        if buf.len() < 8 + 4 + 4 + 8 + 8 + 8 { return Err("bundle too small".into()); }
+        if buf.len() < 40 { return Err("bundle too small".into()); }
         if &buf[0..8] != MAGIC { return Err("bad magic".into()); }
         let version = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-        if version != VERSION { return Err(format!("unsupported version {version}")); }
         let compression = PayloadCompression::from_u32(u32::from_le_bytes(buf[12..16].try_into().unwrap()))?;
         let manifest_len = u64::from_le_bytes(buf[16..24].try_into().unwrap()) as usize;
         let payload_len = u64::from_le_bytes(buf[24..32].try_into().unwrap()) as usize;
-        let _uncompressed_len = u64::from_le_bytes(buf[32..40].try_into().unwrap()) as usize;
-        let off = 40;
-        if buf.len() < off + manifest_len + payload_len { return Err("bundle truncated".into()); }
-        let manifest = CapsuleManifest::from_bytes(&buf[off..off + manifest_len])?;
-        let payload_stored = &buf[off + manifest_len..off + manifest_len + payload_len];
-        let payload = match compression {
-            PayloadCompression::None => payload_stored.to_vec(),
-        };
-        Ok(Self { manifest, payload, compression })
+        let uncompressed_len = u64::from_le_bytes(buf[32..40].try_into().unwrap()) as usize;
+
+        match version {
+            VERSION_V1 => {
+                let off = 40;
+                if buf.len() < off + manifest_len + payload_len { return Err("bundle truncated".into()); }
+                let manifest = CapsuleManifest::from_bytes(&buf[off..off + manifest_len])?;
+                let payload_stored = &buf[off + manifest_len..off + manifest_len + payload_len];
+                let payload = match compression { PayloadCompression::None => payload_stored.to_vec(), _ => return Err("v1 only supports compression none".into()) };
+                Ok(Self { manifest, payload, compression })
+            }
+            VERSION => {
+                if buf.len() < HEADER_LEN { return Err("bundle too small".into()); }
+                let manifest_crc = u32::from_le_bytes(buf[40..44].try_into().unwrap());
+                let payload_crc = u32::from_le_bytes(buf[44..48].try_into().unwrap());
+                let _header_flags = u32::from_le_bytes(buf[48..52].try_into().unwrap());
+                let off = HEADER_LEN;
+                if buf.len() < off + manifest_len + payload_len { return Err("bundle truncated".into()); }
+                let manifest_bytes = &buf[off..off + manifest_len];
+                let payload_stored = &buf[off + manifest_len..off + manifest_len + payload_len];
+                let actual_manifest_crc = crc32fast::hash(manifest_bytes);
+                if actual_manifest_crc != manifest_crc { return Err(format!("manifest crc mismatch: expected {manifest_crc:08x} got {actual_manifest_crc:08x}")); }
+                let payload = match compression {
+                    PayloadCompression::None => payload_stored.to_vec(),
+                    PayloadCompression::Deflate => {
+                        use std::io::Read as _;
+                        let mut dec = flate2::read::DeflateDecoder::new(payload_stored);
+                        let mut out = Vec::with_capacity(uncompressed_len);
+                        dec.read_to_end(&mut out).map_err(|e| format!("deflate decode: {e}"))?;
+                        out
+                    }
+                };
+                if payload.len() != uncompressed_len { return Err(format!("payload size mismatch: expected {uncompressed_len} got {}", payload.len())); }
+                let actual_payload_crc = crc32fast::hash(&payload);
+                if actual_payload_crc != payload_crc { return Err(format!("payload crc mismatch: expected {payload_crc:08x} got {actual_payload_crc:08x}")); }
+                let manifest = CapsuleManifest::from_bytes(manifest_bytes)?;
+                Ok(Self { manifest, payload, compression })
+            }
+            other => Err(format!("unsupported version {other}")),
+        }
     }
 
     pub fn append_to_exe(exe_path: impl AsRef<Path>, out_exe: impl AsRef<Path>, bundle: &Self) -> Result<(), String> {
@@ -137,7 +191,7 @@ impl CapsuleBundle {
         if &foot[0..8] != EXE_FOOTER_MAGIC { return Ok(None); }
         let bundle_len = u64::from_le_bytes(foot[8..16].try_into().unwrap()) as usize;
         let version = u32::from_le_bytes(foot[16..20].try_into().unwrap());
-        if version != VERSION { return Err(format!("unsupported appended bundle version {version}")); }
+        if version != VERSION && version != VERSION_V1 { return Err(format!("unsupported appended bundle version {version}")); }
         if data.len() < EXE_FOOTER_LEN + bundle_len { return Err("appended bundle truncated".into()); }
         let start = data.len() - EXE_FOOTER_LEN - bundle_len;
         let bundle = Self::from_bytes(&data[start..start + bundle_len])?;
@@ -146,15 +200,29 @@ impl CapsuleBundle {
 
     pub fn write_to_bytes<W: Write>(&self, mut w: W) -> Result<(), String> {
         let manifest_bytes = self.manifest.to_bytes();
-        let payload_bytes = match self.compression { PayloadCompression::None => self.payload.clone() };
+        let payload_stored = match self.compression {
+            PayloadCompression::None => self.payload.clone(),
+            PayloadCompression::Deflate => {
+                use std::io::Write as _;
+                let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                enc.write_all(&self.payload).map_err(|e| format!("deflate encode: {e}"))?;
+                enc.finish().map_err(|e| format!("deflate finish: {e}"))?
+            }
+        };
+        let manifest_crc = crc32fast::hash(&manifest_bytes);
+        let payload_crc = crc32fast::hash(&self.payload);
         w.write_all(MAGIC).map_err(|e| e.to_string())?;
         w.write_all(&VERSION.to_le_bytes()).map_err(|e| e.to_string())?;
         w.write_all(&(self.compression as u32).to_le_bytes()).map_err(|e| e.to_string())?;
         w.write_all(&(manifest_bytes.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
-        w.write_all(&(payload_bytes.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&(payload_stored.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
         w.write_all(&(self.payload.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&manifest_crc.to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&payload_crc.to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?; // header_flags
+        w.write_all(&0u32.to_le_bytes()).map_err(|e| e.to_string())?; // reserved
         w.write_all(&manifest_bytes).map_err(|e| e.to_string())?;
-        w.write_all(&payload_bytes).map_err(|e| e.to_string())?;
+        w.write_all(&payload_stored).map_err(|e| e.to_string())?;
         Ok(())
     }
 }

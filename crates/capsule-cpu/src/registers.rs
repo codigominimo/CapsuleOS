@@ -4,6 +4,12 @@ use crate::flags::*;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Idtr {
+    pub base: u64,
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Registers {
     pub rax: u64,
     pub rbx: u64,
@@ -23,12 +29,16 @@ pub struct Registers {
     pub r15: u64,
     pub rip: u64,
     pub rflags: u64,
+    pub idtr: Idtr,
+    pub interrupts_enabled: bool, // IF logical model for software backend
 }
 
 impl Registers {
     pub fn new() -> Self {
         Self {
             rflags: FLAG_RESERVED,
+            idtr: Idtr::default(),
+            interrupts_enabled: false,
             ..Default::default()
         }
     }
