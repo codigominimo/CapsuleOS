@@ -162,6 +162,11 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: slice M13 condicionado. **Ubuntu Server/Minimal NO declarado soportado** sin caso reproducible validado.
   - Bloqueadores: MMIO, IRQ/APIC/IOAPIC/IDT delivery completo, CPU x86_64 completa (long mode/paginación/excepciones/MSRs), timers ACPI/HPET/APIC, PCI/virtio/drivers completos, firmware/UEFI real.
 
+* [~] **Hito M14 - Ubuntu Desktop (GUI)** (completado como slice condicionado/bloqueado):
+  - `capsule.exe test-linux-gui [kernel] [initrd] [cmdline]`: valida plumbing GUI determinista (VBE framebuffer + blit host + PS/2 input/IRQ por sondeo) y ruta Linux direct boot sintética/best-effort.
+  - `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: slice M14 condicionado. **Ubuntu Desktop/X11/Wayland NO declarado soportado** sin caso reproducible validado.
+  - Bloqueadores: MMIO, IRQ/APIC/IOAPIC/IDT delivery, CPU x86_64 completa, timers ACPI/HPET/APIC, GPU/virtio-gpu/drm/kms, UEFI/firmware, USB/HID y stack Linux completo.
+
 ---
 
 ## Compilación y Uso
@@ -297,6 +302,17 @@ Valida solo mapeo ROM/reset/ejecución mínima determinista. **No** valida OVMF 
 .\target\release\capsule.exe test-ubuntu-server .\vmlinuz .\initrd.img "console=ttyS0"
 ```
 **No** declara Ubuntu Server/Minimal soportado. Una imagen externa solo prueba carga/ejecución best-effort; soporte real requiere caso reproducible validado y bloqueadores de CPU/MMIO/IRQ/timers/dispositivos/firmware resueltos.
+
+### Verificar Linux GUI / Ubuntu Desktop slice (Hito M14, condicionado)
+```powershell
+# Slice GUI condicionado: VBE framebuffer + PS/2 input + Linux boot sintético
+.\target\release\capsule.exe test-linux-gui
+
+# Slice M14 condicionado (sin args = sintético; con args = best-effort externo)
+.\target\release\capsule.exe test-ubuntu-desktop
+.\target\release\capsule.exe test-ubuntu-desktop .\vmlinuz .\initrd.img "console=ttyS0 video=800x600-32"
+```
+**No** declara Ubuntu Desktop/X11/Wayland soportado. Valida plumbing GUI existente, no desktop Linux real.
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

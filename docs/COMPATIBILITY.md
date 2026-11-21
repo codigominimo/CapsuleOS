@@ -27,7 +27,7 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 | **Ubuntu Server / Minimal** | x86-64 | Direct / UEFI | No soportado | No soportado | No | N/A | No | No | Bloqueado - requiere MMIO, IRQ/APIC/IDT, CPU x86_64 completa, timers/ACPI, drivers/firmware; `test-ubuntu-server` es condicionado/best-effort |
 | **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado | Planeado |
-| **Ubuntu Desktop** | x86-64 | UEFI | No (lento) | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
+| **Ubuntu Desktop** | x86-64 | UEFI/Direct (best-effort) | No soportado | No soportado | Parcial (solo COM1/plumbing) | Parcial (VBE LFB plumbing M9/M14, sin desktop real) | Parcial (PS/2 plumbing M10/M14) | No | Bloqueado - `test-ubuntu-desktop` es condicionado; requiere MMIO, IRQ/APIC/IDT, CPU x86_64 completa, timers/ACPI/HPET, GPU/virtio-gpu/drm/kms, UEFI/firmware |
 | **Debian GNU/Linux** | x86-64 | BIOS / UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Fedora Linux** | x86-64 | UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Windows PE** | x86-64 | UEFI | No | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |

@@ -77,3 +77,9 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **No soportado**: Ubuntu Server/Minimal real **no está soportado/validado**. No existe caso reproducible de boot completo de Ubuntu en el runtime actual.
 * **Bloqueadores críticos**: MMIO, entrega arquitectural de interrupciones (IDT/PIC/APIC/IOAPIC/CLI/STI/IRET), CPU x86_64 incompleta (long mode/paginación/excepciones/MSRs/faults), timers/APIC/HPET/ACPI, dispositivos y drivers necesarios para Linux real (virtio/PCI completos, almacenamiento/red/console compatibles), firmware/UEFI/bootloader real.
 * **Criterio de soporte futuro**: solo declarar Ubuntu soportado con imagen/artefactos identificados, comandos reproducibles, logs/serial capturados y validación automatizada en CI/host compatible.
+
+### 3.6. Ubuntu Desktop GUI (M14, slice condicionado/bloqueado)
+* **Estado**: existe plumbing GUI validado determinísticamente: framebuffer VBE/LFB (M9), blit Win32, input PS/2 teclado/ratón (M10) y Linux direct boot sintético/best-effort (M13/M14). `test-linux-gui`/`test-ubuntu-desktop` componen estas piezas.
+* **No soportado**: Ubuntu Desktop/X11/Wayland real **no está soportado/validado**. No hay caso reproducible de arranque de desktop Linux real.
+* **Bloqueadores críticos**: todos los de M13 más GPU moderna/virtio-gpu/drm/kms, aceleración/modos gráficos reales, USB/HID completo, temporización/APIC/HPET más precisa, firmware/UEFI, y stack de drivers/userspace Linux completo.
+* **Criterio de soporte futuro**: caso reproducible con imagen Ubuntu Desktop identificada, kernel/initrd/cmdline/firmware/disco, logs serie, captura de pantalla/framebuffer esperado y prueba automatizada.

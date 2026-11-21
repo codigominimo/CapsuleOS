@@ -22,7 +22,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
 | **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | Completado (scope acotado/condicionado) |
 | **M13**| **Ubuntu Minimal / Server** | Slice condicionado: validación de ruta Linux direct boot (kernel/initrd/cmdline) sintética y CLI best-effort para imágenes externas; Ubuntu Server real no declarado soportado | Completado (condicionado/bloqueado) |
-| **M14**| **Ubuntu Desktop (GUI)** | Arranque verificado de entorno gráfico X11/Wayland de Ubuntu en ventana | Pendiente |
+| **M14**| **Ubuntu Desktop (GUI)** | Slice condicionado: validación determinista de plumbing GUI (VBE framebuffer + PS/2 input + Linux direct boot); Ubuntu Desktop/X11/Wayland real no soportado | Completado (condicionado/bloqueado) |
 | **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
 | **M16**| **Capsule Builder CLI** | Herramienta `capsule build <image>` que genera ejecutables `.exe` | Pendiente |
 | **M17**| **Single-EXE Self-Contained** | Empaquetado final de `ubuntu.exe` sin dependencias de archivos auxiliares | Pendiente |
@@ -109,3 +109,11 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - CLI `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: slice condicionado M13. Sin imagen externa valida solo ruta sintética de boot Linux; con imagen externa reporta best-effort y bloqueadores. **Nunca declara Ubuntu Server soportado** sin caso reproducible validado.
 - Validación: `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-linux-boot`, `test-ubuntu-server`, regresiones CLI (`test-guest`, `test-boot`, `test-serial`, `test-storage`, `test-disk`, `test-cow`, `test-platform`, `test-network`, `test-framebuffer`, `test-input`, `test-boot-disk`, `test-firmware`, `test-cdrom`, `test-uefi`, `test-whpx` SKIP seguro).
 - **Bloqueadores para Ubuntu real**: MMIO, entrega arquitectural IRQ/APIC/IOAPIC/IDT/CLI/STI/IRET, CPU x86_64 completa (long mode/paginación/excepciones/MSRs), timers HPET/APIC/ACPI, dispositivos PCI/virtio completos, firmware/UEFI real, almacenamiento/red/controladores compatibles con Linux moderno.
+
+### Hito M14 (completado como slice condicionado/bloqueado)
+- **Objetivo roadmap**: arranque verificado de Ubuntu Desktop con X11/Wayland en ventana. **Estado real**: **NO soportado**; no hay caso reproducible validado de Ubuntu Desktop real.
+- CLI `capsule.exe test-linux-gui [kernel] [initrd] [cmdline]`: slice condicionado que valida plumbing GUI determinista reusando `test-framebuffer` (VBE/LFB + blit host) y `test-input` (PS/2 teclado/ratón/IRQ por sondeo), más ruta Linux direct boot sintética/best-effort.
+- CLI `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: mismo slice con etiquetado Ubuntu Desktop; sin args ejecuta validación sintética, con args externos es best-effort y **nunca declara Ubuntu Desktop soportado**.
+- La GUI Win32 existente ya renderiza LFB VBE y traduce eventos teclado/ratón a PS/2 (M9/M10); esto es plumbing, no soporte de desktop Linux real.
+- Validación: `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-linux-gui`, `test-ubuntu-desktop`, regresiones CLI clave y `test-whpx` SKIP seguro.
+- **Bloqueadores para Ubuntu Desktop real**: MMIO, IRQ/APIC/IOAPIC/IDT delivery, CPU x86_64 completa, timers ACPI/HPET/APIC, GPU/virtio-gpu/drm/kms, UEFI/firmware, USB/HID completo, almacenamiento/red/driver stack Linux completo.

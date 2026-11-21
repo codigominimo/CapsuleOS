@@ -136,6 +136,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 
 * **`capsule-boot`**:
   * M13 (condicionado/bloqueado): plumbing `linux_kernel_path/initrd_path/cmdline` en `VmConfig`; CLIs `test-linux-boot`/`test-ubuntu-server` validan ruta sintética y permiten best-effort externo. **Ubuntu Server no soportado** sin caso reproducible validado.
+  * M14 (condicionado/bloqueado): CLIs `test-linux-gui`/`test-ubuntu-desktop` componen framebuffer VBE + input PS/2 + Linux direct boot para validar plumbing GUI determinista/best-effort. **Ubuntu Desktop/X11/Wayland no soportado** sin caso reproducible validado.
   * Cargador directo de kernel Linux (protocolo de arranque x86 de Linux bzImage).
   * Carga de `vmlinuz` + `initramfs` + `boot_params` (zero-page) directo en memoria RAM del guest, permitiendo arranque instantáneo de Linux en milisegundos sin pasar por la BIOS.
 

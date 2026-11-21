@@ -19,6 +19,8 @@
 //! - `capsule.exe test-uefi [ovmf.fd]`: Verificacion M12.3 condicionada de mapeo/reset UEFI/OVMF (no soporte completo).
 //! - `capsule.exe test-linux-boot [kernel] [initrd] [cmdline]`: Verificacion Linux direct boot (M13 condicionado; externo best-effort).
 //! - `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: Slice M13 Ubuntu Server condicionado (no soporte Ubuntu real declarado).
+//! - `capsule.exe test-linux-gui [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Linux GUI plumbing: framebuffer+input+boot).
+//! - `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Ubuntu Desktop NO soportado).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -1143,6 +1145,29 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Nota: IRQs reflejadas a PIC por sondeo; sin inyeccion de IRQ en CPU (IDT/CLI/STI/IRET).");
     println!("  En GUI: eventos Win32 (WM_KEY*/WM_MOUSE*) -> scancodes/paquetes PS/2 guest.");
     println!("==================================================");
+    Ok(())
+}
+
+fn run_test_linux_gui(
+    kernel_path: Option<&str>,
+    initrd_path: Option<&str>,
+    cmdline: Option<&str>,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1) Validar plumbing de GUI: framebuffer VBE + input PS/2, reusando rutas existentes.
+    run_test_framebuffer()?;
+    run_test_input()?;
+
+    // 2) Validar ruta Linux boot con configuración orientada a GUI (best-effort/condicionada).
+    let gui_cmdline = cmdline.unwrap_or("console=ttyS0 earlyprintk=serial,0x3F8,115200 video=800x600-32 rdinit=/bin/sh");
+    run_test_linux_boot(kernel_path, initrd_path, Some(gui_cmdline), VmBackendKind::Software, label)?;
+
+    if kernel_path.is_none() {
+        println!("  [INFO] Slice M14 condicionado: framebuffer+input+Linux boot sintético verificados.");
+    } else {
+        println!("  [WARN] Kernel Linux externo ejecutado best-effort; esto NO valida Ubuntu Desktop/X11/Wayland real.");
+    }
+    println!("  [INFO] Bloqueadores para Ubuntu Desktop real: MMIO, IRQ/APIC/IDT delivery, CPU x86_64 completa, timers/ACPI/HPET, GPU/virtio-gpu/drivers, UEFI/firmware, USB/HID completo.");
     Ok(())
 }
 
@@ -2629,6 +2654,41 @@ fn main() {
         }
         if let Err(e) = run_test_linux_boot(kernel, initrd, cmdline, VmBackendKind::Software, "UbuntuServerM13") {
             eprintln!("Error en test-ubuntu-server: {}", e);
+            std::process::exit(1);
+        }
+        println!("==================================================");
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-linux-gui" || arg == "--test-linux-gui") {
+        let kernel = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let initrd = args.get(pos + 2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let cmdline = args.get(pos + 3).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        println!("==================================================");
+        println!("   Linux GUI slice (M14, condicionado)          ");
+        println!("==================================================");
+        if let Err(e) = run_test_linux_gui(kernel, initrd, cmdline, "LinuxGuiM14") {
+            eprintln!("Error en test-linux-gui: {}", e);
+            std::process::exit(1);
+        }
+        println!("==================================================");
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-ubuntu-desktop" || arg == "--test-ubuntu-desktop") {
+        let kernel = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let initrd = args.get(pos + 2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let cmdline = args.get(pos + 3).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        println!("==================================================");
+        println!("   Ubuntu Desktop GUI (M14, condicionado)       ");
+        println!("==================================================");
+        println!("  Estado real: Ubuntu Desktop NO declarado soportado sin caso reproducible validado.");
+        println!("  Bloqueadores: MMIO, IRQ/APIC/IDT, CPU x86_64 completa, timers/ACPI/HPET, GPU/virtio-gpu/drivers, UEFI/firmware, input HID completo.");
+        if kernel.is_none() {
+            println!("  [INFO] Sin kernel externo: ejecutando validación sintética framebuffer+input+Linux boot.");
+        }
+        if let Err(e) = run_test_linux_gui(kernel, initrd, cmdline, "UbuntuDesktopM14") {
+            eprintln!("Error en test-ubuntu-desktop: {}", e);
             std::process::exit(1);
         }
         println!("==================================================");
