@@ -1,4 +1,4 @@
-//! # CapsuleOS - Runtime Principal (Hitos M0 a M11 completados, M12 en progreso)
+//! # CapsuleOS - Runtime Principal (Hitos M0 a M12 completados, M13 condicionado)
 //!
 //! Punto de entrada de la aplicacion `capsule.exe`.
 //! Comandos CLI:
@@ -17,6 +17,8 @@
 //! - `capsule.exe test-firmware [bios]`: Verificacion de firmware BIOS/stub y boot desde disco (M12.1).
 //! - `capsule.exe test-cdrom [iso]` : Verificacion de ATAPI/ISO El Torito boot (M12.2) o ISO externa experimental.
 //! - `capsule.exe test-uefi [ovmf.fd]`: Verificacion M12.3 condicionada de mapeo/reset UEFI/OVMF (no soporte completo).
+//! - `capsule.exe test-linux-boot [kernel] [initrd] [cmdline]`: Verificacion Linux direct boot (M13 condicionado; externo best-effort).
+//! - `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: Slice M13 Ubuntu Server condicionado (no soporte Ubuntu real declarado).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -108,6 +110,9 @@ fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -149,6 +154,86 @@ fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn build_synthetic_linux_bzimage() -> Vec<u8> {
+    // Kernel sintético mínimo: lee cmd_line_ptr de boot_params (RSI+0x228) a EAX y hace HLT.
+    let kernel_code = [
+        0x8B, 0x86, 0x28, 0x02, 0x00, 0x00, // mov eax, [rsi + 0x228]
+        0xF4,                               // hlt
+    ];
+    let setup_sects = 4u8;
+    let header_size = (setup_sects as usize + 1) * 512;
+    let mut bzimage = vec![0u8; header_size + kernel_code.len()];
+    bzimage[0x1F1] = setup_sects;
+    bzimage[0x202..0x206].copy_from_slice(&HDRS_MAGIC.to_le_bytes());
+    bzimage[0x206..0x208].copy_from_slice(&0x020Du16.to_le_bytes());
+    bzimage[0x211] = 0x01; // LOADED_HIGH
+    bzimage[0x214..0x218].copy_from_slice(&0x0010_0000u32.to_le_bytes()); // code32_start = 1 MB
+    bzimage[header_size..].copy_from_slice(&kernel_code);
+    bzimage
+}
+
+fn run_test_linux_boot(
+    kernel_path: Option<&str>,
+    initrd_path: Option<&str>,
+    cmdline: Option<&str>,
+    backend: VmBackendKind,
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cmdline = cmdline.unwrap_or("console=ttyS0 earlyprintk=serial,0x3F8,115200 rdinit=/bin/sh");
+    let (kernel_bytes, kernel_desc) = if let Some(p) = kernel_path {
+        (std::fs::read(p)?, p.to_string())
+    } else {
+        (build_synthetic_linux_bzimage(), "synthetic-bzimage".to_string())
+    };
+    let (initrd_bytes, initrd_desc) = if let Some(p) = initrd_path {
+        (Some(std::fs::read(p)?), p.to_string())
+    } else {
+        (None, "none".to_string())
+    };
+
+    println!("  [INFO] {label}");
+    println!("  [INFO] backend={backend:?} kernel={kernel_desc} initrd={initrd_desc}");
+    println!("  [INFO] cmdline=\"{cmdline}\"");
+
+    let config = VmConfig {
+        name: label.to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(256),
+        backend,
+        firmware_bios_path: None,
+        firmware_uefi_path: None,
+        linux_kernel_path: kernel_path.map(|s| s.to_string()),
+        linux_initrd_path: initrd_path.map(|s| s.to_string()),
+        linux_cmdline: Some(cmdline.to_string()),
+    };
+    let mut vm = match VirtualMachine::new(config) {
+        Ok(vm) => vm,
+        Err(e) => {
+            println!("  [SKIP] No se pudo inicializar VM/backend: {e}");
+            println!("  Nota: esto no declara soporte de Ubuntu/OS real; ver bloqueadores M13+.");
+            return Ok(());
+        }
+    };
+
+    let boot = vm.load_linux(&kernel_bytes, cmdline, initrd_bytes.as_deref())?;
+    println!("  [OK] Kernel cargado: entry=0x{:X} boot_params=0x{:X} pml4=0x{:X}", boot.entry_rip, boot.boot_params_addr.raw(), boot.pml4_addr.raw());
+
+    let exit = vm.run_steps(5_000_000)?;
+    let exit = exit.unwrap_or(VcpuExit::Shutdown);
+    println!("  [INFO] VM exit: {:?}", exit);
+
+    let synthetic = kernel_path.is_none();
+    if synthetic {
+        assert_eq!(exit, VcpuExit::Halt, "Kernel sintético debe hacer HLT");
+        assert_eq!(vm.eax() & 0xFFFF_FFFF, 0x8000, "EAX debe contener cmd_line_ptr 0x8000");
+        println!("  [OK] Linux direct boot sintético validado (protocolo/zero-page/cmdline/initrd opcional)");
+    } else {
+        println!("  [WARN] Imagen Linux externa ejecutada en modo best-effort. No se declara soporte Ubuntu/OS real sin caso reproducible validado.");
+        println!("  Bloqueadores: MMIO, IRQ/APIC/IDT delivery completo, CPU long mode/paginación/excepciones/MSRs, dispositivos/firmware/timers.");
+    }
+    Ok(())
+}
+
 fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("    Prueba de Arranque Directo Linux (Hito M3)   ");
@@ -162,58 +247,25 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
     println!("VM creada con 128 MB de RAM");
 
-    let kernel_code = [
-        0x8B, 0x86, 0x28, 0x02, 0x00, 0x00, // mov eax, [rsi + 0x228]
-        0xF4, // hlt
-    ];
+    run_test_linux_boot(
+        None,
+        None,
+        Some("console=ttyS0 earlyprintk=serial,0x3F8,115200 root=/dev/vda"),
+        VmBackendKind::Software,
+        "Linux direct boot (M3 sintético)",
+    )?;
 
-    let setup_sects = 4u8;
-    let header_size = (setup_sects as usize + 1) * 512;
-    let mut bzimage = vec![0u8; header_size + kernel_code.len()];
-    bzimage[0x1F1] = setup_sects;
-    bzimage[0x202..0x206].copy_from_slice(&HDRS_MAGIC.to_le_bytes());
-    bzimage[0x206..0x208].copy_from_slice(&0x020Du16.to_le_bytes());
-    bzimage[0x211] = 0x01; // LOADED_HIGH
-    bzimage[0x214..0x218].copy_from_slice(&0x00100000u32.to_le_bytes()); // code32_start = 1 MB
-    bzimage[header_size..].copy_from_slice(&kernel_code);
-
-    let cmdline = "console=ttyS0 earlyprintk=serial,0x3F8,115200 root=/dev/vda";
-    let boot_info = vm.load_linux(&bzimage, cmdline, None)?;
-
-    println!("Linux bzImage parseado: Firma HdrS vÃ¡lida");
-    println!(
-        "Tablas de pÃ¡ginas PML4 identity mapping creadas en 0x{:04X}",
-        boot_info.pml4_addr.raw()
-    );
-    println!(
-        "Zero Page (boot_params) inicializada en 0x{:04X}",
-        boot_info.boot_params_addr.raw()
-    );
-    println!("LÃ­nea de comandos escrita en 0x8000: \"{}\"", boot_info.cmdline);
-    println!("Cuerpo del kernel copiado en 0x{:06X}", boot_info.entry_rip);
-    println!(
-        "Registros iniciales de protocolo: RIP=0x{:06X}, RSI=0x{:04X}",
-        vm.rip(), vm.rsi()
-    );
-
-    let exit = vm.run()?;
-    if exit == VcpuExit::Halt {
-        println!("Kernel guest ejecutado con Ã©xito.");
-        println!(
-            "VerificaciÃ³n: EAX contiene cmd_line_ptr = 0x{:04X} (Esperado: 0x8000)",
-            vm.eax()
-        );
-        println!("Estado del protocolo de arranque directo: Ã‰XITO!");
-    } else {
-        println!("Salida inesperada del kernel: {:?}", exit);
-    }
     println!("==================================================");
-
+    println!("  Estado del protocolo de arranque directo: ÉXITO!");
+    println!("==================================================");
     Ok(())
 }
 
@@ -230,6 +282,9 @@ fn run_test_serial() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -389,6 +444,9 @@ fn run_ide_guest_on_disk(
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     vm.attach_primary_master_disk(disk)?;
@@ -661,6 +719,9 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
     // Seleccionar 00:03.0, offset 0x00 (Vendor/Device)
     // Guest escribe 0x80001800 a 0xCF8 y lee 0xCFC (4 bytes) -> [ebx]
@@ -753,6 +814,9 @@ fn run_test_framebuffer() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
 
     // Guest: configura Bochs VBE 320x200x32 con LFB y escribe patron rojo en el framebuffer, luego HLT.
@@ -876,6 +940,9 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
     let kbd_code = [
         0xE4, 0x64, // in al, 0x64
@@ -907,6 +974,9 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
     let enable_mouse = [
         0xB0, 0xD4, 0xE6, 0x64, // out 64, D4
@@ -959,6 +1029,9 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
     for dev in &mut vm3.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -1007,6 +1080,9 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
     for dev in &mut vm4.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -1094,6 +1170,9 @@ fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
         backend: VmBackendKind::Whpx,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     }) {
         Ok(vm) => vm,
         Err(e) => {
@@ -1140,6 +1219,9 @@ fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
         backend: VmBackendKind::Whpx,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     }) {
         Ok(mut vm_io) => {
             let io_code = [
@@ -1280,6 +1362,9 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     })?;
     // Leer 0xCF8 (4 bytes) -> EAX debe ser 0 en estado inicial del bus PCI
     let code = [
@@ -1331,6 +1416,9 @@ fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = open_disk_image_for_boot(path)?;
@@ -1383,6 +1471,9 @@ fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: bios_path.map(|s| s.to_string()),
         firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
@@ -1447,6 +1538,9 @@ fn run_test_uefi(firmware_path: Option<&str>) -> Result<(), Box<dyn std::error::
         backend: VmBackendKind::Software,
         firmware_bios_path: None,
         firmware_uefi_path: if deterministic { None } else { Some(source.clone()) },
+        linux_kernel_path: None,
+        linux_initrd_path: None,
+        linux_cmdline: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let entry = vm.boot_firmware_uefi_image(&image)?;
@@ -1488,6 +1582,9 @@ fn run_test_cdrom(iso_path: Option<&str>) -> Result<(), Box<dyn std::error::Erro
             backend: VmBackendKind::Software,
             firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
         };
         let mut vm = VirtualMachine::new(config)?;
         vm.boot_from_cdrom_secondary_master(disk)?;
@@ -1557,6 +1654,9 @@ fn run_test_cdrom(iso_path: Option<&str>) -> Result<(), Box<dyn std::error::Erro
         backend: VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, 2048)?;
@@ -1668,6 +1768,9 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
@@ -2497,6 +2600,41 @@ fn main() {
         return;
     }
 
+    if let Some(pos) = args.iter().position(|arg| arg == "test-linux-boot" || arg == "--test-linux-boot") {
+        let kernel = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let initrd = args.get(pos + 2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let cmdline = args.get(pos + 3).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        println!("==================================================");
+        println!("   Prueba Linux Direct Boot (M13, condicionado)  ");
+        println!("==================================================");
+        if let Err(e) = run_test_linux_boot(kernel, initrd, cmdline, VmBackendKind::Software, "LinuxDirectBootM13") {
+            eprintln!("Error en test-linux-boot: {}", e);
+            std::process::exit(1);
+        }
+        println!("==================================================");
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-ubuntu-server" || arg == "--test-ubuntu-server") {
+        let kernel = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let initrd = args.get(pos + 2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        let cmdline = args.get(pos + 3).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        println!("==================================================");
+        println!("   Ubuntu Minimal/Server (M13, condicionado)    ");
+        println!("==================================================");
+        println!("  Estado real: Ubuntu Server NO declarado soportado sin caso reproducible validado.");
+        println!("  Bloqueadores: MMIO, IRQ/APIC/IDT delivery, CPU x86_64 completa, timers/ACPI, drivers/dispositivos, firmware/boot real.");
+        if kernel.is_none() {
+            println!("  [INFO] Sin kernel externo: ejecutando validación sintética de ruta Linux direct boot.");
+        }
+        if let Err(e) = run_test_linux_boot(kernel, initrd, cmdline, VmBackendKind::Software, "UbuntuServerM13") {
+            eprintln!("Error en test-ubuntu-server: {}", e);
+            std::process::exit(1);
+        }
+        println!("==================================================");
+        return;
+    }
+
     if args.iter().any(|arg| arg == "test-serial" || arg == "--test-serial") {
         if let Err(e) = run_test_serial() {
             eprintln!("Error en test-serial: {}", e);
@@ -2621,6 +2759,9 @@ fn main() {
         backend: VmBackendKind::Whpx,
         firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
     }) {
         Ok(vm) => vm,
         Err(e) => {

@@ -23,7 +23,8 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 | Sistema Operativo | Arquitectura | Modo Arranque | Backend Emulador | Backend WHPX | Consola (TTY) | Gráficos (GUI) | Entrada (PS/2) | Persistencia | Estado |
 |---|---|---|---|---|---|---|---|---|---|
 | **Minimal Test Guest (synthetic)** | x86-64 | Direct (M1/M11 tests) | Verificado (backend software) | Verificado parcial (tests `test-whpx`: HLT + IO a COM1, según host) | Verificado (UART 16550/COM1 por sondeo) | Verificado (VBE LFB 320x200x32, `test-framebuffer`, render Win32 por sondeo) | Verificado (i8042 teclado/ratón, IRQ1/IRQ12 por sondeo, `test-input`; GUI Win32→PS/2) | N/A | En desarrollo (tests internos, WHPX mínimo) |
-| **Linux Minimal (BusyBox / initramfs)** | x86-64 | Direct Boot (bzImage) | Planeado | Planeado | Planeado (base UART/earlyprintk) | N/A | Planeado | Planeado | Planeado |
+| **Linux Minimal (BusyBox / initramfs, sintético)** | x86-64 | Direct Boot (bzImage) | Verificado (slice M13 condicionado, kernel sintético + protocolo/cmdline/initrd opcional) | No validado | Parcial (COM1/UART por sondeo) | N/A | No | Parcial (solo initrd en memoria, no disco root real) | Condicionado - no es distro real; externo best-effort |
+| **Ubuntu Server / Minimal** | x86-64 | Direct / UEFI | No soportado | No soportado | No | N/A | No | No | Bloqueado - requiere MMIO, IRQ/APIC/IDT, CPU x86_64 completa, timers/ACPI, drivers/firmware; `test-ubuntu-server` es condicionado/best-effort |
 | **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado | Planeado |
 | **Ubuntu Desktop** | x86-64 | UEFI | No (lento) | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |

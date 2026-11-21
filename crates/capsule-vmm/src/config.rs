@@ -23,6 +23,12 @@ pub struct VmConfig {
     pub firmware_bios_path: Option<String>,
     /// Ruta a imagen UEFI/OVMF (M12.3, condicionado). No implica soporte completo.
     pub firmware_uefi_path: Option<String>,
+    /// Ruta opcional a kernel Linux (bzImage) para boot directo (M13+).
+    pub linux_kernel_path: Option<String>,
+    /// Ruta opcional a initramfs/initrd para boot directo Linux (M13+).
+    pub linux_initrd_path: Option<String>,
+    /// Línea de comandos kernel Linux (M13+).
+    pub linux_cmdline: Option<String>,
 }
 
 impl Default for VmConfig {
@@ -34,6 +40,9 @@ impl Default for VmConfig {
             backend: VmBackendKind::Software,
             firmware_bios_path: None,
             firmware_uefi_path: None,
+            linux_kernel_path: None,
+            linux_initrd_path: None,
+            linux_cmdline: None,
         }
     }
 }

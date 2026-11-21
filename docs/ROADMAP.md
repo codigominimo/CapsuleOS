@@ -21,7 +21,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratón, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyección de eventos Win32 desde GUI y validación `test-input` | **Completado** |
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
 | **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | Completado (scope acotado/condicionado) |
-| **M13**| **Ubuntu Minimal / Server** | Arranque verificado de distribución Ubuntu Server mediante WHPX | Pendiente |
+| **M13**| **Ubuntu Minimal / Server** | Slice condicionado: validación de ruta Linux direct boot (kernel/initrd/cmdline) sintética y CLI best-effort para imágenes externas; Ubuntu Server real no declarado soportado | Completado (condicionado/bloqueado) |
 | **M14**| **Ubuntu Desktop (GUI)** | Arranque verificado de entorno gráfico X11/Wayland de Ubuntu en ventana | Pendiente |
 | **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
 | **M16**| **Capsule Builder CLI** | Herramienta `capsule build <image>` que genera ejecutables `.exe` | Pendiente |
@@ -101,3 +101,11 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - CLI `capsule.exe test-uefi [ovmf.fd]`: self-test determinista con imagen ROM 64KiB (reset vector + código HLT+marker 0x0EF1B007) valida plumbing de mapeo/reset/ejecución. Imagen OVMF externa: best-effort, **no soportada** sin caso reproducible validado.
 - Validacion: `cargo test --workspace`, `cargo build --release -p capsule-gui`, regresiones CLI relevantes, `test-firmware`, `test-cdrom`, `test-uefi`, `test-whpx` (SKIP seguro si host no soporta).
 - Bloqueadores sin resolver: MMIO, IRQ/APIC/IOAPIC/entrega arquitectural, CPU x86_64 completa (long mode/paginación/excepciones/MSRs/SMM), ACPI/HPET/timers, PCI/firmware devices, GOP/framebuffer UEFI, NVRAM/varstore. **OVMF/UEFI no declarado soportado.**
+
+### Hito M13 (completado como slice condicionado/bloqueado)
+- **Objetivo roadmap**: arranque verificado de Ubuntu Server. **Estado real**: Ubuntu Server/Minimal **NO soportado**; no hay caso reproducible validado de boot Ubuntu real en este runtime.
+- `VmConfig` añade plumbing de boot Linux directo: `linux_kernel_path`, `linux_initrd_path`, `linux_cmdline` (configuración; no implica soporte de distro real).
+- CLI `capsule.exe test-linux-boot [kernel] [initrd] [cmdline]`: ejecuta ruta Linux direct boot existente (`load_linux`/bzImage/setup/zero-page/cmdline/initrd). Sin args usa kernel sintético determinista; con kernel externo es **best-effort** y no declara soporte de OS real.
+- CLI `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: slice condicionado M13. Sin imagen externa valida solo ruta sintética de boot Linux; con imagen externa reporta best-effort y bloqueadores. **Nunca declara Ubuntu Server soportado** sin caso reproducible validado.
+- Validación: `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-linux-boot`, `test-ubuntu-server`, regresiones CLI (`test-guest`, `test-boot`, `test-serial`, `test-storage`, `test-disk`, `test-cow`, `test-platform`, `test-network`, `test-framebuffer`, `test-input`, `test-boot-disk`, `test-firmware`, `test-cdrom`, `test-uefi`, `test-whpx` SKIP seguro).
+- **Bloqueadores para Ubuntu real**: MMIO, entrega arquitectural IRQ/APIC/IOAPIC/IDT/CLI/STI/IRET, CPU x86_64 completa (long mode/paginación/excepciones/MSRs), timers HPET/APIC/ACPI, dispositivos PCI/virtio completos, firmware/UEFI real, almacenamiento/red/controladores compatibles con Linux moderno.

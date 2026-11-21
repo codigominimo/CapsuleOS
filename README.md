@@ -156,6 +156,12 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - **M12.3 (condicionado, NO soporte OVMF completo)**: `VmConfig.firmware_uefi_path`, `map_firmware_rom`/`boot_firmware_uefi_image` para mapeo ROM + reset determinista. `capsule.exe test-uefi [ovmf.fd]` valida plumbing con stub determinista; OVMF externo best-effort/no soportado sin caso reproducible validado.
   - Limitaciones: no SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/INT BIOS, INT 13h CD, A20, PCI BIOS, DMA/UDMA, IRQ delivery arquitectural. ATAPI/El Torito mínimo. UEFI bloqueado por MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers/ACPI/firmware devices.
 
+* [~] **Hito M13 - Ubuntu Minimal / Server** (completado como slice condicionado/bloqueado):
+  - `VmConfig` agrega plumbing de Linux direct boot: `linux_kernel_path`, `linux_initrd_path`, `linux_cmdline`.
+  - `capsule.exe test-linux-boot [kernel] [initrd] [cmdline]`: valida ruta Linux direct boot (`load_linux`, bzImage/setup/zero-page/cmdline/initrd). Sin args usa kernel sintético determinista; con kernel externo es best-effort.
+  - `capsule.exe test-ubuntu-server [kernel] [initrd] [cmdline]`: slice M13 condicionado. **Ubuntu Server/Minimal NO declarado soportado** sin caso reproducible validado.
+  - Bloqueadores: MMIO, IRQ/APIC/IOAPIC/IDT delivery completo, CPU x86_64 completa (long mode/paginación/excepciones/MSRs), timers ACPI/HPET/APIC, PCI/virtio/drivers completos, firmware/UEFI real.
+
 ---
 
 ## Compilación y Uso
@@ -280,6 +286,17 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 .\target\release\capsule.exe test-uefi .\ruta\OVMF.fd
 ```
 Valida solo mapeo ROM/reset/ejecución mínima determinista. **No** valida OVMF completo, servicios UEFI, GOP, NVRAM, Secure Boot, ACPI, ni boot de OS reales.
+
+### Verificar Linux Direct Boot / Ubuntu Server slice (Hito M13, condicionado)
+```powershell
+# Ruta sintética determinista de Linux direct boot
+.\target\release\capsule.exe test-linux-boot
+
+# Slice M13 condicionado (sin args = sintético; con args = best-effort externo)
+.\target\release\capsule.exe test-ubuntu-server
+.\target\release\capsule.exe test-ubuntu-server .\vmlinuz .\initrd.img "console=ttyS0"
+```
+**No** declara Ubuntu Server/Minimal soportado. Una imagen externa solo prueba carga/ejecución best-effort; soporte real requiere caso reproducible validado y bloqueadores de CPU/MMIO/IRQ/timers/dispositivos/firmware resueltos.
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

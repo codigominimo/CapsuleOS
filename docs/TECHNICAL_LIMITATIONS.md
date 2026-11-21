@@ -71,3 +71,9 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **Estado M12.3 (condicionado)**: `map_firmware_rom`/`boot_firmware_uefi_image` mapean imagen UEFI/OVMF en ROM y configuran reset mínimo determinista. `test-uefi` valida plumbing con stub ROM determinista (HLT+marker). OVMF externo es best-effort: **no declarado soportado** sin caso reproducible validado.
 * **Limitaciones actuales**: no es SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/servicios INT BIOS, INT 13h/extensions CD, A20 gate, PCI BIOS, DMA/UDMA, entrega arquitectural de IRQ en CPU, ACPI/SMBIOS completas. ATAPI/El Torito mínimo (no-emulation, sin ISO9660 completo, sin media change). UEFI sin servicios/runtime/GOP/NVRAM/Secure Boot.
 * **Bloqueadores M12.3**: MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa (long mode/paginación/excepciones/MSRs/SMM), ACPI/HPET/timers, dispositivos firmware/PCI completos.
+
+### 3.5. Ubuntu Minimal/Server (M13, slice condicionado/bloqueado)
+* **Estado**: CapsuleOS tiene ruta de Linux direct boot (`bzImage`, setup header, zero-page/boot_params, cmdline, initrd, pagetables identity) usada por tests sintéticos y `test-linux-boot`. `test-ubuntu-server` expone un slice condicionado para imágenes externas.
+* **No soportado**: Ubuntu Server/Minimal real **no está soportado/validado**. No existe caso reproducible de boot completo de Ubuntu en el runtime actual.
+* **Bloqueadores críticos**: MMIO, entrega arquitectural de interrupciones (IDT/PIC/APIC/IOAPIC/CLI/STI/IRET), CPU x86_64 incompleta (long mode/paginación/excepciones/MSRs/faults), timers/APIC/HPET/ACPI, dispositivos y drivers necesarios para Linux real (virtio/PCI completos, almacenamiento/red/console compatibles), firmware/UEFI/bootloader real.
+* **Criterio de soporte futuro**: solo declarar Ubuntu soportado con imagen/artefactos identificados, comandos reproducibles, logs/serial capturados y validación automatizada en CI/host compatible.
