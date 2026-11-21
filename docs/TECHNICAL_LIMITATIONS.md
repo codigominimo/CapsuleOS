@@ -88,3 +88,9 @@ Este documento expone las restricciones físicas, lógicas y arquitectónicas in
 * **M15 implementado (acotado)**: formato `.cap` mínimo con magic/version/manifest/payload y roundtrip CLI (`test-bundle`).
 * **M16/M17 implementado (acotado)**: `capsule build <input> [out.exe]` / `test-capsule-build` copia el runtime, appendea bundle+footer `CAPSLEXE` y valida lectura. Artefacto single-file por append.
 * **No soportado aún**: boot real de guest desde payload del bundle, compresión real, firma/verificación criptográfica, streaming/chunking, manifiesto boot completo (kernel/initrd/disk/firmware), overlay COW embebido, firmado PE/AV-hardening, carga automática al iniciar el `.exe` generado.
+
+### 3.8. Windows Guest / FreeBSD / Multi-Arch / Studio Release (M18-M21, condicionado/bloqueado)
+* **M18 Windows guest**: no soportado. `test-windows-guest` solo reporta bloqueadores/metadata. Faltan UEFI completo, ACPI/GPT, MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers, drivers.
+* **M19 FreeBSD**: no soportado. `test-freebsd` solo reporta bloqueadores/metadata. Faltan boot/firmware compatible, MMIO/IRQ/CPU completa, timers, drivers.
+* **M20 Multi-arch**: no implementado. `test-multiarch` declara solo x86_64 actual. Faltan backends ARM64/RISC-V completos.
+* **M21 Studio/Release 1.0**: no declarado. `test-studio` es checklist honesto. Faltan UX Studio completa, boot OS reales, hardening, QA end-to-end y distribución.

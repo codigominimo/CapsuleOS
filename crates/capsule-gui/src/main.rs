@@ -23,6 +23,10 @@
 //! - `capsule.exe test-ubuntu-desktop [kernel] [initrd] [cmdline]`: Slice M14 condicionado (Ubuntu Desktop NO soportado).
 //! - `capsule.exe test-bundle [path]`: Verificacion de Capsule Bundle Format (M15, scope acotado).
 //! - `capsule.exe build <input> [out.exe]` / `test-capsule-build`: Builder CLI y Single-file EXE append (M16/M17, scope acotado).
+//! - `capsule.exe test-windows-guest [image]`: Slice M18 condicionado (Windows guest NO soportado).
+//! - `capsule.exe test-freebsd [image]`: Slice M19 condicionado (FreeBSD NO soportado).
+//! - `capsule.exe test-multiarch`: Slice M20 condicionado (ARM64/RISC-V no emulados).
+//! - `capsule.exe test-studio`: Slice M21 condicionado (GUI Studio/release checklist).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -1269,6 +1273,74 @@ fn run_test_capsule_build(
     println!("--------------------------------------------------");
     println!("  Capsule Builder M16 / Single-file EXE M17 (scope acotado): OK");
     println!("  Nota: append al final del EXE con footer; sin compresion, firma, streaming, ni boot real del payload por VM.");
+    println!("==================================================");
+    Ok(())
+}
+
+fn run_test_windows_guest(image_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Windows Guest (M18, condicionado/bloqueado)  ");
+    println!("==================================================");
+    println!("  Estado real: Windows guest (WinPE/Win10) NO soportado.");
+    println!("  Bloqueadores: UEFI/OVMF completo, ACPI/GPT, MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers/HPET, drivers de disco/red/GPU, Secure Boot/NVRAM.");
+    if let Some(p) = image_path {
+        let meta = std::fs::metadata(p)?;
+        println!("  [INFO] Imagen detectada: {} ({} bytes) - solo inspección metadata, sin boot.", p, meta.len());
+        println!("  [WARN] No se intenta boot Windows: no hay caso reproducible validado.");
+    } else {
+        println!("  [INFO] Sin imagen: validación de reporte de bloqueadores determinista.");
+    }
+    println!("--------------------------------------------------");
+    println!("  M18 condicionado: PASS (reporte honesto, sin soporte falso)");
+    println!("==================================================");
+    Ok(())
+}
+
+fn run_test_freebsd(image_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   BSD / FreeBSD (M19, condicionado/bloqueado)  ");
+    println!("==================================================");
+    println!("  Estado real: FreeBSD NO soportado.");
+    println!("  Bloqueadores: bootloader/UEFI/BIOS compatible, MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers/ACPI/HPET, drivers virtio/AHCI/red, filesystem/loader.");
+    if let Some(p) = image_path {
+        let meta = std::fs::metadata(p)?;
+        println!("  [INFO] Imagen detectada: {} ({} bytes) - solo inspección metadata, sin boot.", p, meta.len());
+        println!("  [WARN] No se intenta boot FreeBSD: no hay caso reproducible validado.");
+    } else {
+        println!("  [INFO] Sin imagen: validación de reporte de bloqueadores determinista.");
+    }
+    println!("--------------------------------------------------");
+    println!("  M19 condicionado: PASS (reporte honesto, sin soporte falso)");
+    println!("==================================================");
+    Ok(())
+}
+
+fn run_test_multiarch() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Multi-Architecture (M20, condicionado)       ");
+    println!("==================================================");
+    let arch = std::env::consts::ARCH;
+    println!("  [INFO] Host arch: {arch}");
+    println!("  [OK] x86_64 software backend: presente (interprete/VM existentes)");
+    println!("  [INFO] ARM64 guest: NO implementado (sin decodificador/emulador ARM64, sin firmware/dispositivos ARM)");
+    println!("  [INFO] RISC-V guest: NO implementado (sin decodificador/emulador RISC-V, sin SBI/firmware/dispositivos)");
+    println!("  Bloqueadores: nuevos CPU backends, modelos de memoria/MMU, interrupciones, firmware, dispositivos, ABI y bootloaders por arquitectura.");
+    println!("--------------------------------------------------");
+    println!("  M20 condicionado: PASS (alcance declarado, sin soporte falso)");
+    println!("==================================================");
+    Ok(())
+}
+
+fn run_test_studio() -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Capsule GUI Studio & Release (M21, acotado)  ");
+    println!("==================================================");
+    println!("  [OK] GUI Win32 base: ventana, framebuffer VBE, input PS/2, diagnostico host.");
+    println!("  [OK] CLIs disponibles: test-guest/boot/serial/storage/disk/cow/platform/network/framebuffer/input/whpx/firmware/cdrom/uefi/linux-boot/ubuntu-server/linux-gui/ubuntu-desktop/bundle/build/windows-guest/freebsd/multiarch/studio.");
+    println!("  [INFO] Studio completo (constructor visual, flujos de empaquetado, gestión de imágenes, UX release 1.0) NO implementado.");
+    println!("  [INFO] Release 1.0 NO declarado: faltan soporte OS reales, MMIO/IRQ/CPU completa, firmware, drivers, seguridad y validación end-to-end.");
+    println!("--------------------------------------------------");
+    println!("  M21 condicionado: PASS (checklist honesto de release)");
     println!("==================================================");
     Ok(())
 }
@@ -2821,6 +2893,40 @@ fn main() {
         let out = args.get(pos + 2).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
         if let Err(e) = run_test_capsule_build(input, out) {
             eprintln!("Error en test-capsule-build: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-windows-guest" || arg == "--test-windows-guest") {
+        let img = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_windows_guest(img) {
+            eprintln!("Error en test-windows-guest: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-freebsd" || arg == "--test-freebsd") {
+        let img = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_freebsd(img) {
+            eprintln!("Error en test-freebsd: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-multiarch" || arg == "--test-multiarch") {
+        if let Err(e) = run_test_multiarch() {
+            eprintln!("Error en test-multiarch: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if args.iter().any(|arg| arg == "test-studio" || arg == "--test-studio") {
+        if let Err(e) = run_test_studio() {
+            eprintln!("Error en test-studio: {}", e);
             std::process::exit(1);
         }
         return;

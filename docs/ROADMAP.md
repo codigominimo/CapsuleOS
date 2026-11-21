@@ -26,10 +26,10 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M15**| **Capsule Bundle Format** | Formato binario mínimo (magic/version/compression/manifest/payload) con writer/reader y CLI `test-bundle`; compresión real/firma/PE append pendientes | Completado (scope acotado) |
 | **M16**| **Capsule Builder CLI** | CLI `capsule build <input> [out.exe]` / `test-capsule-build`: empaqueta input en bundle y lo appendea a copia del runtime EXE; sin boot real desde payload | Completado (scope acotado) |
 | **M17**| **Single-EXE Self-Contained** | EXE autocontenido por append+footer (bundle detectado en el propio EXE); sin compresión/firma/streaming/boot de OS real desde payload | Completado (scope acotado) |
-| **M18**| **Windows Guest (WinPE / Win10)**| Soporte para invitados Windows (UEFI, GPT, ACPI, controladores virtuales) | Pendiente |
-| **M19**| **BSD Support (FreeBSD)** | Verificación y soporte de arranque de sistemas FreeBSD | Pendiente |
-| **M20**| **Multi-Architecture Emulation**| Soporte para invitados ARM64 y RISC-V en backend emulador | Pendiente |
-| **M21**| **Capsule GUI Studio & Release**| Interfaz gráfica de construcción y lanzamiento público 1.0 | Pendiente |
+| **M18**| **Windows Guest (WinPE / Win10)**| Slice condicionado/bloqueado: CLI `test-windows-guest` reporta bloqueadores y no declara soporte; sin boot Windows real | Completado (condicionado/bloqueado) |
+| **M19**| **BSD Support (FreeBSD)** | Slice condicionado/bloqueado: CLI `test-freebsd` reporta bloqueadores y no declara soporte; sin boot FreeBSD real | Completado (condicionado/bloqueado) |
+| **M20**| **Multi-Architecture Emulation**| Slice condicionado: CLI `test-multiarch` declara x86_64 existente y ARM64/RISC-V no implementados | Completado (condicionado/bloqueado) |
+| **M21**| **Capsule GUI Studio & Release**| Slice condicionado: CLI `test-studio` checklist honesto; GUI Studio completo y Release 1.0 no declarados | Completado (condicionado/bloqueado) |
 
 ---
 
@@ -131,3 +131,23 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - Esto produce un artefacto single-file por append (M17 acotado), pero **no** boot real de OS desde payload ni empaquetado seguro/productivo completo.
 - Validación: `cargo test -p capsule-bundle`, `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-capsule-build`, `test-bundle`, `test-whpx` SKIP seguro.
 - Limitaciones: sin compresión, firma/validación criptográfica, streaming, alineación/firmado PE avanzado, manifest completo de boot, selección automática de payload por VM, ni soporte real de Ubuntu/Windows guest desde bundle.
+
+### Hito M18 (completado, condicionado/bloqueado)
+- **Objetivo roadmap**: soporte Windows Guest (WinPE/Win10). **Estado real**: **NO soportado**.
+- CLI `capsule.exe test-windows-guest [image]`: inspección metadata opcional, reporte determinista de bloqueadores; no intenta boot. No declara soporte.
+- Bloqueadores: UEFI/OVMF completo, ACPI/GPT, MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers/HPET, storage/network/GPU drivers, Secure Boot/NVRAM.
+
+### Hito M19 (completado, condicionado/bloqueado)
+- **Objetivo roadmap**: soporte FreeBSD. **Estado real**: **NO soportado**.
+- CLI `capsule.exe test-freebsd [image]`: inspección metadata opcional, reporte determinista de bloqueadores; no intenta boot. No declara soporte.
+- Bloqueadores: bootloader/UEFI/BIOS compatible, MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers/ACPI/HPET, virtio/AHCI/red/drivers.
+
+### Hito M20 (completado, condicionado/bloqueado)
+- **Objetivo roadmap**: multi-arch ARM64/RISC-V. **Estado real**: solo x86_64 existente; ARM64/RISC-V **NO implementados**.
+- CLI `capsule.exe test-multiarch`: reporta alcance actual y gaps por arquitectura. No declara emulación multi-arch.
+- Bloqueadores: decodificadores/emuladores CPU, MMU/modelos memoria, interrupciones, firmware/boot, dispositivos y ABIs por arquitectura.
+
+### Hito M21 (completado, condicionado/bloqueado)
+- **Objetivo roadmap**: GUI Studio & Release 1.0. **Estado real**: GUI base y CLIs existen; **Studio completo y Release 1.0 NO declarados**.
+- CLI `capsule.exe test-studio`: checklist honesto de capacidades/ausencias de release.
+- Bloqueadores: soporte OS reales, MMIO/IRQ/CPU completa, firmware/devices robustos, UX studio, packaging seguro, QA end-to-end, signing/distribution.

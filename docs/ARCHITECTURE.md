@@ -158,4 +158,10 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
   * Entrada por línea de comandos para control, inspección, arranque headless e integración con scripts.
 
 * **`capsule-builder`**:
-  * Herramienta de compilación para usuarios que desean generar sus propios ejecutables `.exe` a partir de ISOs o VHDs.
+  * M16/M17 (acotado): `capsule.exe build <input> [out.exe]` y `test-capsule-build` generan EXE con bundle appendado+footer y validan lectura. Pendiente: manifest boot completo, compresión/firma, streaming, carga de payload por VM y empaquetado productivo.
+
+## 4. Estado M18-M21 (condicionado)
+* **M18 Windows Guest**: no soportado. CLI `test-windows-guest` solo reporta bloqueadores/metadata opcional.
+* **M19 FreeBSD**: no soportado. CLI `test-freebsd` solo reporta bloqueadores/metadata opcional.
+* **M20 Multi-arch**: no implementado. CLI `test-multiarch` declara x86_64 existente y ausencia de ARM64/RISC-V.
+* **M21 GUI Studio & Release**: no declarado. CLI `test-studio` expone checklist honesto; falta Studio completo, QA/release, boot de OS reales y hardening.

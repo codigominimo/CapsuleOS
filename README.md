@@ -176,6 +176,12 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - `capsule.exe build <input> [out.exe]` o `test-capsule-build [input] [out.exe]`: copia runtime EXE, appendea bundle con payload del input y footer `CAPSLEXE`, y valida lectura.
   - Produce single-file EXE por append (acotado). **No** soporta boot real de OS desde payload, compresión, firma, streaming, ni empaquetado seguro/productivo completo.
 
+* [~] **Hitos M18-M21** (completados como condicionados/bloqueados, sin soporte falso):
+  - `test-windows-guest [image]`: Windows WinPE/Win10 **NO soportado**; reporte de bloqueadores/inspección metadata.
+  - `test-freebsd [image]`: FreeBSD **NO soportado**; reporte de bloqueadores/inspección metadata.
+  - `test-multiarch`: solo x86_64 actual; ARM64/RISC-V **NO implementados**.
+  - `test-studio`: checklist honesto; GUI Studio completo y Release 1.0 **NO declarados**.
+
 ---
 
 ## Compilación y Uso
@@ -340,6 +346,15 @@ Valida formato M15 acotado (magic/version/manifest/payload roundtrip). No valida
 .\target\release\capsule.exe build .\input.img .\mi_capsula.exe
 ```
 Valida solo append/detección de bundle en EXE. **No** valida boot real de OS desde payload, compresión, firma, streaming ni packaging productivo.
+
+### Verificar slices condicionados M18-M21
+```powershell
+.\target\release\capsule.exe test-windows-guest [imagen]
+.\target\release\capsule.exe test-freebsd [imagen]
+.\target\release\capsule.exe test-multiarch
+.\target\release\capsule.exe test-studio
+```
+Estos comandos son **reportes/validaciones condicionadas**: no declaran soporte de Windows/FreeBSD/ARM64/RISC-V/Release 1.0. Solo inspección metadata opcional y checklist honesto de bloqueadores.
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

@@ -28,6 +28,9 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 | **Alpine Linux** | x86-64 | Direct / BIOS | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Ubuntu Server** | x86-64 | UEFI / Direct | Planeado | Planeado | Planeado | N/A | Planeado | Planeado | Planeado |
 | **Ubuntu Desktop** | x86-64 | UEFI/Direct (best-effort) | No soportado | No soportado | Parcial (solo COM1/plumbing) | Parcial (VBE LFB plumbing M9/M14, sin desktop real) | Parcial (PS/2 plumbing M10/M14) | No | Bloqueado - `test-ubuntu-desktop` es condicionado; requiere MMIO, IRQ/APIC/IDT, CPU x86_64 completa, timers/ACPI/HPET, GPU/virtio-gpu/drm/kms, UEFI/firmware |
+| **Windows WinPE / Win10 (M18)** | x86-64 | UEFI/GPT requerido (no implementado) | No soportado | No soportado | No | No | No | No | Bloqueado - `test-windows-guest` solo reporta bloqueadores/metadata |
+| **FreeBSD (M19)** | x86-64 | BIOS/UEFI (no implementado) | No soportado | No soportado | No | No | No | No | Bloqueado - `test-freebsd` solo reporta bloqueadores/metadata |
+| **Guest ARM64 / RISC-V (M20)** | ARM64/RISC-V | N/A | No implementado | No implementado | No | No | No | No | Bloqueado - `test-multiarch` reporta ausencia de emulación/backends |
 | **Debian GNU/Linux** | x86-64 | BIOS / UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Fedora Linux** | x86-64 | UEFI | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
 | **Windows PE** | x86-64 | UEFI | No | Planeado | Planeado | Planeado | Planeado | Planeado | Planeado |
