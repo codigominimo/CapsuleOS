@@ -990,10 +990,10 @@ impl SimpleVcpu {
         match op2 {
             // LIDT / SIDT (0F 01 /2 /3) - minimal support
             0x01 => {
-                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
-                self.regs.rip += 1;
+                let modrm_byte = self.fetch_u8(mem)?;
                 let modrm = ModRm::parse(modrm_byte, rex);
-                let rm_loc = OperandLocation::resolve_rm(&modrm, rex, &mut self.regs, mem)?;
+                let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 });
+                let rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?;
                 match modrm.reg & 0x07 {
                     2 => { // LGDT
                         let addr = match rm_loc { OperandLocation::Memory(a) => a, _ => return Err("LGDT requires memory operand".into()) };
@@ -1034,8 +1034,7 @@ impl SimpleVcpu {
             }
             // MOV r32/64, CRn (0F 20) / MOV CRn, r32/64 (0F 22) - minimal
             0x20 | 0x22 => {
-                let modrm_byte = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
-                self.regs.rip += 1;
+                let modrm_byte = self.fetch_u8(mem)?;
                 let modrm = ModRm::parse(modrm_byte, rex);
                 let cr = modrm.reg & 0x07;
                 let rm = modrm.rm | if rex.b { 8 } else { 0 };
