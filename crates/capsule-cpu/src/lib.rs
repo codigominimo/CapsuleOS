@@ -112,8 +112,15 @@ impl SimpleVcpu {
             // NOP
             0x90 => Ok(None),
 
-            // HLT
-            0xF4 => Ok(Some(CpuExitReason::Halt)),
+            // HLT - interruptible when IF enabled
+            0xF4 => {
+                if self.regs.interrupts_enabled {
+                    self.regs.rip = self.regs.rip.wrapping_sub(1); // stay on HLT until interrupt
+                    Ok(None)
+                } else {
+                    Ok(Some(CpuExitReason::Halt))
+                }
+            },
 
             // MOV r8, imm8 (0xB0..=0xB7)
             0xB0..=0xB7 => {
