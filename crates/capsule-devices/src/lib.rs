@@ -12,7 +12,10 @@ pub mod uart16550;
 pub mod vga;
 pub mod virtio_net;
 
-pub use ide::{IdeController, PRIMARY_CTRL, PRIMARY_IO_BASE, PRIMARY_IO_END};
+pub use ide::{
+    IdeController, PRIMARY_CTRL, PRIMARY_IO_BASE, PRIMARY_IO_END, SECONDARY_CTRL, SECONDARY_IO_BASE,
+    SECONDARY_IO_END,
+};
 pub use pci::{PciBus, PciDevice, PCI_CONFIG_ADDRESS, PCI_CONFIG_DATA};
 pub use pic::Pic8259;
 pub use platform::{Pit8254, RtcCmos};

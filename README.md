@@ -152,9 +152,9 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - Limitaciones: sin MMIO, sin inyección/entrega arquitectural de IRQ (IDT/CLI/STI/IRET/APIC), contexto inicial mínimo (sin long mode/firmware/kernel real), y fidelidad/temporización dependiente del modelo de tick/sondeo actual.
 * [~] **Hito M12 - Firmware BIOS & UEFI** (en progreso):
   - **M12.1 (completado, scope acotado)**: ROM mapeada en `GuestMemory` (writes ignoradas); `capsule-vmm` mapea BIOS y hace boot firmware desde disco IDE primario con reset minimo. BIOS stub integrado 64 KiB (software) imprime banner COM1, lee LBA0 por ATA PIO a 0x7C00 y salta al boot sector. `VmConfig.firmware_bios_path` permite BIOS externa experimental. `capsule.exe test-firmware [bios.bin]` valida el flujo.
-  - **M12.2 (pendiente)**: ISO/ATAPI CD-ROM boot, ISO9660/El Torito segun viabilidad.
+  - **M12.2 (completado, scope acotado)**: ATAPI PIO mínimo en IDE secundario maestro (0x170/IRQ15), lectura de sectores 2048 bytes, y ruta de boot CD-ROM desde ISO. `boot_from_cdrom_secondary_master` parsea Boot Record Volume El Torito, catálogo de arranque y entrada inicial/default no-emulation x86, carga la imagen de boot en 0x7C00 y salta con DL=0xE0. Fallback: si no hay El Torito válido, carga LBA 0. `capsule.exe test-cdrom [iso]` genera/valida un ISO El Torito determinista o carga una ISO externa (experimental).
   - **M12.3 (pendiente, condicionado)**: OVMF/UEFI solo soportado con caso reproducible validado; bloqueadores: MMIO, IRQ/APIC, CPU/modos/excepciones/MSRs mas completos.
-  - Limitaciones: no SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/INT BIOS reales, A20, PCI BIOS, DMA, IRQ delivery en CPU, ni ISO/El Torito.
+  - Limitaciones: no SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/INT BIOS reales, A20, PCI BIOS, DMA, IRQ delivery en CPU. ATAPI/El Torito es mínimo (no-emulation, sin ISO9660 completo, sin BIOS INT 13h CD).
 
 ---
 
@@ -260,6 +260,15 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 
 # Experimental: probar una imagen BIOS externa (p.ej. SeaBIOS). Solo se considera soportada con caso reproducible validado.
 .\target\release\capsule.exe test-firmware .\ruta\bios.bin
+```
+
+### Verificar CD-ROM/ISO ATAPI y El Torito (Hito M12.2)
+```powershell
+# Self-test determinista: genera ISO El Torito no-emulation, parsea catalogo y ejecuta boot sector
+.\target\release\capsule.exe test-cdrom
+
+# Opcional: cargar una ISO externa (experimental/best-effort)
+.\target\release\capsule.exe test-cdrom .\ruta\imagen.iso
 ```
 
 ### Ejecutar la batería de pruebas automatizadas

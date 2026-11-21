@@ -41,7 +41,7 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 |---|---|---|---|---|
 | **Raw Sector Image (.img, .raw)** | Verificado (tests M5) | Verificado (tests M5) | Verificado (overlay COW, M6) | Soportado (RAW sector 512, scope actual) |
 | **VHD Fixed (512-byte)** | Verificado (tests M5) | Verificado (tests M5) | Verificado (overlay COW, M6) | Soportado (fixed, sector 512) |
-| **ISO 9660 (.iso)** | Planeado (M12.2, ATAPI/El Torito no implementado) | No (Solo lectura) | Planeado (Overlay COW) | Planeado |
+| **ISO 9660 / El Torito (.iso)** | Parcial M12.2 (ATAPI PIO mínimo, 2048-byte sectors, Boot Record Volume + catalog + initial/default x86 no-emulation; `test-cdrom` determinista) | No (Solo lectura / imagen externa experimental) | No (overlay no validado para ISO) | Parcial (ATAPI secondary master, IRQ15, sin INT 13h CD/ISO9660 completo) |
 | **VHD Dynamic** | Planeado | Planeado | Planeado | Planeado |
 | **VHDX** | Planeado | Planeado | Planeado | Planeado |
 | **QCOW2** | Planeado | Planeado | Planeado | Planeado |

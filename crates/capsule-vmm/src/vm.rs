@@ -113,11 +113,27 @@ impl VirtualMachine {
         self.devices.push(device);
     }
 
-    /// Adjunta un disco al canal IDE primario como unidad maestra (master).
+    /// Adjunta un disco ATA al canal IDE primario como unidad maestra (master).
     /// Registra el controlador ATA/IDE PIO (0x1F0-0x1F7, 0x3F6) si aún no existe.
     pub fn attach_primary_master_disk(
         &mut self,
         disk: Box<dyn BlockDevice>,
+    ) -> Result<(), VmmError> {
+        self.attach_primary_master_disk_with_kind(disk, false)
+    }
+
+    /// Adjunta un disco ATAPI/CD-ROM al canal IDE primario como unidad maestra (M12.2, experimental).
+    pub fn attach_primary_master_atapi_disk(
+        &mut self,
+        disk: Box<dyn BlockDevice>,
+    ) -> Result<(), VmmError> {
+        self.attach_primary_master_disk_with_kind(disk, true)
+    }
+
+    fn attach_primary_master_disk_with_kind(
+        &mut self,
+        disk: Box<dyn BlockDevice>,
+        atapi: bool,
     ) -> Result<(), VmmError> {
         let ide_port = 0x1F0u16;
         if self.devices.iter().any(|d| d.handles_port(ide_port)) {
@@ -126,7 +142,25 @@ impl VirtualMachine {
             ));
         }
         let mut ide = IdeController::new_primary();
-        ide.attach_master(disk);
+        if atapi { ide.attach_master_atapi(disk); } else { ide.attach_master(disk); }
+        self.devices.push(Box::new(ide));
+        Ok(())
+    }
+
+    /// Adjunta un disco ATAPI/CD-ROM al canal IDE secundario como unidad maestra (M12.2).
+    /// Registra el controlador (0x170-0x177, 0x376) si aún no existe.
+    pub fn attach_secondary_master_atapi_disk(
+        &mut self,
+        disk: Box<dyn BlockDevice>,
+    ) -> Result<(), VmmError> {
+        let ide_port = 0x170u16;
+        if self.devices.iter().any(|d| d.handles_port(ide_port)) {
+            return Err(VmmError::InitializationFailed(
+                "El controlador IDE secundario ya está registrado".to_string(),
+            ));
+        }
+        let mut ide = IdeController::new_secondary();
+        ide.attach_master_atapi(disk);
         self.devices.push(Box::new(ide));
         Ok(())
     }
@@ -233,11 +267,40 @@ impl VirtualMachine {
             &owned
         };
         let entry = self.map_bios_rom(bios)?;
-
+ 
         let mut regs = Registers::new();
         regs.rip = entry;
         regs.rsp = 0x0007_FFF0;
         regs.rdx = 0x80; // DL = primer disco duro (convención BIOS)
+        regs.rflags = 0x2;
+        self.set_regs(&regs);
+        Ok(())
+    }
+
+    /// Boot mínimo desde CD-ROM/ISO (M12.2, scope acotado).
+    /// - Adjunta el disco como ATAPI en IDE secundario maestro (0x170).
+    /// - Intenta El Torito: lee PVD (LBA 16), Boot Record Volume (LBA 17, "EL TORITO SPECIFICATION"),
+    ///   catalogo de arranque, entrada inicial default x86, y carga la imagen de boot en 0x7C00.
+    /// - Fallback: si no hay El Torito válido, carga LBA 0 (2048 bytes) en 0x7C00.
+    /// - Configura RIP=0x7C00, DL=0xE0 (CD-ROM) y estado mínimo.
+    pub fn boot_from_cdrom_secondary_master(
+        &mut self,
+        mut disk: Box<dyn BlockDevice>,
+    ) -> Result<(), VmmError> {
+        let ss = disk.sector_size();
+        if ss != 2048 {
+            return Err(VmmError::InitializationFailed(format!(
+                "M12.2 CD-ROM requiere sectores de 2048 bytes (recibido: {ss})"
+            )));
+        }
+        let boot_img = read_cdrom_boot_image(&mut *disk)?;
+        self.memory
+            .write_bytes(GuestAddress::new(0x7C00), &boot_img)
+            .map_err(|e| VmmError::MemoryMappingFailed(format!("Error cargando boot CD-ROM en 0x7C00: {e}")))?;
+        self.attach_secondary_master_atapi_disk(disk)?;
+        self.set_rip(0x7C00);
+        let mut regs = self.get_regs();
+        regs.rdx = (regs.rdx & !0xFF) | 0xE0; // DL=CD
         regs.rflags = 0x2;
         self.set_regs(&regs);
         Ok(())
@@ -356,14 +419,19 @@ impl VirtualMachine {
         // - IRQ1 : Teclado PS/2 i8042 (nivel mientras haya scancodes pendientes)
         // - IRQ11: PCI INTx agregada (virtio-net, nivel mientras ISR pendiente)
         // - IRQ12: Ratón PS/2 i8042 (nivel mientras haya paquetes pendientes)
-        // - IRQ14: IDE primario (nivel mientras irq_pending && !nIEN)
+        // - IRQ14: IDE primario, IRQ15: IDE secundario (nivel mientras irq_pending && !nIEN)
         let mut ide_irq14 = false;
+        let mut ide_irq15 = false;
         let mut pci_irq11 = false;
         let mut kbd_irq1 = false;
         let mut mouse_irq12 = false;
         for dev in &mut self.devices {
             if let Some(ide) = dev.as_any_mut().downcast_mut::<IdeController>() {
-                ide_irq14 = ide.irq_pending();
+                if ide.io_base == 0x1F0 {
+                    ide_irq14 = ide.irq_pending();
+                } else if ide.io_base == 0x170 {
+                    ide_irq15 = ide.irq_pending();
+                }
             }
             if let Some(pci) = dev.as_any_mut().downcast_mut::<PciBus>() {
                 pci_irq11 = pci.any_irq_level();
@@ -383,6 +451,7 @@ impl VirtualMachine {
                 pic.set_irq_level(11, pci_irq11);
                 pic.set_irq_level(12, mouse_irq12);
                 pic.set_irq_level(14, ide_irq14);
+                pic.set_irq_level(15, ide_irq15);
                 break;
             }
         }
@@ -669,101 +738,176 @@ fn mask_for_size(size: u8) -> u64 {
     match size { 1 => 0xFF, 2 => 0xFFFF, 4 => 0xFFFF_FFFF, _ => u64::MAX }
 }
 
-/// Construye una imagen BIOS ROM de 64 KiB con un stub determinista (M12.1).
+fn read_cdrom_boot_image(disk: &mut dyn BlockDevice) -> Result<Vec<u8>, VmmError> {
+    let ss = disk.sector_size() as usize;
+    if ss != 2048 {
+        return Err(VmmError::InitializationFailed("CD-ROM requiere sector 2048".to_string()));
+    }
+    let mut sector = vec![0u8; ss];
+    // Try El Torito: Boot Record Volume Descriptor at LBA 17
+    if disk.sector_count() > 17 {
+        disk.read_sectors(17, 1, &mut sector).map_err(|e| VmmError::InitializationFailed(format!("ISO LBA17: {e}")))?;
+        if sector[0] == 0 && &sector[1..6] == b"CD001" && sector[6] == 1
+            && sector[7..39].starts_with(b"EL TORITO SPECIFICATION")
+        {
+            let catalog_lba = u32::from_le_bytes([sector[0x47], sector[0x48], sector[0x49], sector[0x4A]]) as u64;
+            if catalog_lba < disk.sector_count() {
+                let mut cat = vec![0u8; ss];
+                disk.read_sectors(catalog_lba, 1, &mut cat).map_err(|e| VmmError::InitializationFailed(format!("El Torito catalog: {e}")))?;
+                // Validation Entry at 0x00: header id 0x01, platform 0x00 (x86), 55AA at 0x1E
+                let valid = cat[0] == 0x01 && cat[1] == 0x00 && cat[0x1E] == 0x55 && cat[0x1F] == 0xAA;
+                // Initial/Default Entry at 0x20: bootable 0x88
+                if valid && cat[0x20] == 0x88 {
+                    let sector_count_512 = u16::from_le_bytes([cat[0x26], cat[0x27]]) as usize;
+                    let load_rba = u32::from_le_bytes([cat[0x28], cat[0x29], cat[0x2A], cat[0x2B]]) as u64;
+                    let bytes_to_load = if sector_count_512 == 0 { 512 } else { sector_count_512.saturating_mul(512) };
+                    let sectors_2048 = ((bytes_to_load + 2047) / 2048).max(1) as u64;
+                    if load_rba.saturating_add(sectors_2048) <= disk.sector_count() {
+                        let mut img = vec![0u8; (sectors_2048 as usize) * ss];
+                        disk.read_sectors(load_rba, sectors_2048 as u32, &mut img)
+                            .map_err(|e| VmmError::InitializationFailed(format!("El Torito boot image: {e}")))?;
+                        img.truncate(bytes_to_load.min(img.len()));
+                        if img.len() >= 512 {
+                            // Return up to 2048 bytes for 0x7C00 area (enough for boot sector + small stub)
+                            let out_len = img.len().min(2048);
+                            let mut out = vec![0u8; 2048];
+                            out[..out_len].copy_from_slice(&img[..out_len]);
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: LBA 0
+    disk.read_sectors(0, 1, &mut sector).map_err(|e| VmmError::InitializationFailed(format!("CD-ROM LBA0: {e}")))?;
+    Ok(sector)
+}
+
+/// Construye una imagen BIOS ROM de 64 KiB con un stub determinista (M12.1/M12.2).
 /// - Mapeo esperado: 0xF0000..0xFFFFF (entrada de reset 0xFFFF0).
-/// - Comportamiento: imprime "CapsuleBIOS\r\n" por COM1 (0x3F8), lee LBA0 del IDE primario
-///   maestro a 0x7C00 mediante PIO y salta a 0x7C00. Si la lectura falla, imprime "BIOS:DISKERR\r\n" y HLT.
-/// Usa solo opcodes soportados por el intǸrprete software actual (modelo plano).
+/// - M12.1: intenta boot ATA PIO desde IDE primario maestro (0x1F0), lee LBA0 a 0x7C00 y salta.
+/// - M12.2: si ATA falla/no DRQ, intenta ATAPI PIO en IDE secundario maestro (0x170),
+///   envía PACKET READ(10) LBA0 count=1 (2048 bytes) y carga a 0x7C00, luego salta.
+/// Modelo plano/software CPU; no INT BIOS reales, no El Torito completo en ROM (la ruta El Torito
+/// se resuelve por helper Rust `boot_from_cdrom_secondary_master` cuando aplica).
 fn build_builtin_bios_stub() -> Vec<u8> {
     let mut rom = vec![0u8; 0x1_0000];
     let base: u32 = 0xF_0000;
-
-    // Cuerpo del stub en offset 0x0100 (0xF0100)
     let mut code: Vec<u8> = Vec::new();
 
-    // init stack: mov esp, 0x0007FFF0
-    code.extend_from_slice(&[0xBC, 0xF0, 0xFF, 0x07, 0x00]);
+    fn patch_rel8(code: &mut [u8], pos: usize, target: usize) {
+        let rel = (target as i32) - ((pos as i32) + 2);
+        assert!(rel >= -128 && rel <= 127, "rel8 fuera de rango: {rel} pos={pos} target={target}");
+        code[pos + 1] = rel as i8 as u8;
+    }
 
-    // print "CapsuleBIOS\r\n" a COM1 (0x3F8)
-    let banner = b"CapsuleBIOS\r\n";
-    for &b in banner {
-        // mov dx, 0x3F8; mov al, imm8; out dx, al
+    // init stack
+    code.extend_from_slice(&[0xBC, 0xF0, 0xFF, 0x07, 0x00]); // mov esp,0x7FFF0
+    for &b in b"CapsuleBIOS M12\r\n" {
         code.extend_from_slice(&[0xBA, 0xF8, 0x03, 0x00, 0x00, 0xB0, b, 0xEE]);
     }
 
-    // ATA PIO: select master/LBA, read LBA0 -> 0x7C00
-    // mov dx,0x1F6; mov al,0xE0; out dx,al
-    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]);
-    // sector count = 1 (0x1F2)
-    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]);
-    // LBA low/mid/high = 0 (0x1F3-0x1F5)
+    // ===== ATA primary master (0x1F0) =====
+    code.extend_from_slice(&[0xBA, 0xF6, 0x01, 0x00, 0x00, 0xB0, 0xE0, 0xEE]); // drive/head
+    code.extend_from_slice(&[0xBA, 0xF2, 0x01, 0x00, 0x00, 0xB0, 0x01, 0xEE]); // count
     code.extend_from_slice(&[0xBA, 0xF3, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
     code.extend_from_slice(&[0xBA, 0xF4, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
     code.extend_from_slice(&[0xBA, 0xF5, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]);
-    // command READ SECTORS 0x20 (0x1F7)
-    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]);
-
-    // poll status: timeout loop, error on ERR(0x01)/DF(0x20), proceed on DRQ(0x08)
-    // mov ecx, 0x00100000 (timeout ticks)
-    code.extend_from_slice(&[0xB9, 0x00, 0x00, 0x10, 0x00]);
-    let poll_loop = code.len();
-    // mov dx,0x1F7; in al,dx
-    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC]);
-    // test err/df: test al,0x21; jnz disk_err (patched)
-    code.extend_from_slice(&[0xA8, 0x21]);
-    let jnz_err_pos = code.len();
-    code.extend_from_slice(&[0x75, 0x00]); // patch -> disk_err
-    // test drq: test al,0x08; jnz read_sector (patched)
-    code.extend_from_slice(&[0xA8, 0x08]);
-    let jnz_drq_pos = code.len();
-    code.extend_from_slice(&[0x75, 0x00]); // patch -> read_sector
-    // dec ecx; jnz poll_loop
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xB0, 0x20, 0xEE]); // READ SECTORS
+    code.extend_from_slice(&[0xB9, 0x00, 0x00, 0x10, 0x00]); // timeout
+    let poll_hdd = code.len();
+    code.extend_from_slice(&[0xBA, 0xF7, 0x01, 0x00, 0x00, 0xEC]); // in al,dx
+    code.extend_from_slice(&[0xA8, 0x21]); let jnz_hdd_err = code.len(); code.extend_from_slice(&[0x75, 0x00]);
+    code.extend_from_slice(&[0xA8, 0x08]); let jnz_hdd_drq = code.len(); code.extend_from_slice(&[0x75, 0x00]);
     code.extend_from_slice(&[0xFF, 0xC9]);
-    let rel_back = (poll_loop as i32) - ((code.len() as i32) + 2);
-    code.extend_from_slice(&[0x75, rel_back as i8 as u8]);
-    // timeout -> disk_err (fallthrough)
-    let disk_err = code.len();
-    for &b in b"BIOS:DISKERR\r\n" {
+    let rb = (poll_hdd as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rb as i8 as u8]);
+    let jmp_try_cd = code.len();
+    code.extend_from_slice(&[0xEB, 0x00]); // timeout -> try_cd
+
+    // read_hdd close to poll_hdd for rel8
+    let read_hdd = code.len();
+    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]); // data port
+    code.extend_from_slice(&[0xBF, 0x00, 0x7C, 0x00, 0x00]); // edi
+    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]); // 128 dwords
+    let rlh = code.len();
+    code.extend_from_slice(&[0xED, 0x89, 0x07, 0x83, 0xC7, 0x04, 0xFF, 0xC9]);
+    let rrh = (rlh as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rrh as i8 as u8]);
+    code.extend_from_slice(&[0xB8, 0x00, 0x7C, 0x00, 0x00, 0xFF, 0xE0]); // jmp 0x7C00
+
+    let try_cd = code.len();
+    // ===== ATAPI secondary master (0x170) =====
+    for &b in b"BIOS:CD\r\n" {
         code.extend_from_slice(&[0xBA, 0xF8, 0x03, 0x00, 0x00, 0xB0, b, 0xEE]);
     }
-    code.push(0xF4); // hlt
+    code.extend_from_slice(&[0xBA, 0x76, 0x01, 0x00, 0x00, 0xB0, 0xA0, 0xEE]); // select
+    code.extend_from_slice(&[0xBA, 0x71, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]); // features
+    code.extend_from_slice(&[0xBA, 0x74, 0x01, 0x00, 0x00, 0xB0, 0x00, 0xEE]); // bytecount lo
+    code.extend_from_slice(&[0xBA, 0x75, 0x01, 0x00, 0x00, 0xB0, 0x08, 0xEE]); // bytecount hi
+    code.extend_from_slice(&[0xBA, 0x77, 0x01, 0x00, 0x00, 0xB0, 0xA0, 0xEE]); // PACKET
+    code.extend_from_slice(&[0xB9, 0x00, 0x00, 0x10, 0x00]);
+    let poll_pkt = code.len();
+    code.extend_from_slice(&[0xBA, 0x77, 0x01, 0x00, 0x00, 0xEC]);
+    code.extend_from_slice(&[0xA8, 0x21]); let jnz_cd_err = code.len(); code.extend_from_slice(&[0x75, 0x00]);
+    code.extend_from_slice(&[0xA8, 0x08]); let jnz_cd_drq = code.len(); code.extend_from_slice(&[0x75, 0x00]);
+    code.extend_from_slice(&[0xFF, 0xC9]);
+    let rp2 = (poll_pkt as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rp2 as i8 as u8]);
+    let jmp_cd_err1 = code.len();
+    code.extend_from_slice(&[0xEB, 0x00]);
 
-    let read_sector = code.len();
-    // read 256 dwords: mov dx,0x1F0; mov edi,0x7C00; mov ecx,128? 256 words=128 dwords*2; easier 256 dwords via insd not avail -> 128 * (in eax,dx; stosd-like manual) x2
-    // mov dx,0x1F0
-    code.extend_from_slice(&[0xBA, 0xF0, 0x01, 0x00, 0x00]);
-    // mov edi,0x00007C00
-    code.extend_from_slice(&[0xBF, 0x00, 0x7C, 0x00, 0x00]);
-    // mov ecx, 128 (dwords)
-    code.extend_from_slice(&[0xB9, 0x80, 0x00, 0x00, 0x00]);
-    let read_loop = code.len();
-    // in eax,dx; mov [edi],eax; add edi,4; dec ecx; jnz read_loop
+    let send_pkt = code.len();
+    code.extend_from_slice(&[0xBA, 0x70, 0x01, 0x00, 0x00]); // dx=0x170
+    for dw in [0x0000_0028u32, 0x0000_0000u32, 0x0000_0100u32] {
+        let b = dw.to_le_bytes();
+        code.extend_from_slice(&[0xB8, b[0], b[1], b[2], b[3], 0xEF]); // out dx,eax
+    }
+    code.extend_from_slice(&[0xB9, 0x00, 0x00, 0x10, 0x00]);
+    let poll_cd_data = code.len();
+    code.extend_from_slice(&[0xBA, 0x77, 0x01, 0x00, 0x00, 0xEC]);
+    code.extend_from_slice(&[0xA8, 0x21]); let jnz_cd_data_err = code.len(); code.extend_from_slice(&[0x75, 0x00]);
+    code.extend_from_slice(&[0xA8, 0x08]); let jnz_cd_data_drq = code.len(); code.extend_from_slice(&[0x75, 0x00]);
+    code.extend_from_slice(&[0xFF, 0xC9]);
+    let rp3 = (poll_cd_data as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rp3 as i8 as u8]);
+    let jmp_cd_err2 = code.len();
+    code.extend_from_slice(&[0xEB, 0x00]);
+
+    let read_cd = code.len();
+    code.extend_from_slice(&[0xBA, 0x70, 0x01, 0x00, 0x00]); // dx=0x170
+    code.extend_from_slice(&[0xBF, 0x00, 0x7C, 0x00, 0x00]); // edi=0x7C00
+    code.extend_from_slice(&[0xB9, 0x00, 0x02, 0x00, 0x00]); // 512 dwords
+    let rlc = code.len();
     code.extend_from_slice(&[0xED, 0x89, 0x07, 0x83, 0xC7, 0x04, 0xFF, 0xC9]);
-    let rel_read = (read_loop as i32) - ((code.len() as i32) + 2);
-    code.extend_from_slice(&[0x75, rel_read as i8 as u8]);
-
-    // jump to boot sector: mov eax,0x7C00; jmp eax (FF /4)
+    let rrc = (rlc as i32) - ((code.len() as i32) + 2);
+    code.extend_from_slice(&[0x75, rrc as i8 as u8]);
     code.extend_from_slice(&[0xB8, 0x00, 0x7C, 0x00, 0x00, 0xFF, 0xE0]);
 
-    // patch rel8 jumps
-    let rel_err = (disk_err as i32) - ((jnz_err_pos as i32) + 2);
-    let rel_drq = (read_sector as i32) - ((jnz_drq_pos as i32) + 2);
-    code[jnz_err_pos + 1] = rel_err as i8 as u8;
-    code[jnz_drq_pos + 1] = rel_drq as i8 as u8;
+    let cd_err = code.len();
+    for &b in b"BIOS:NOBOOT\r\n" { code.extend_from_slice(&[0xBA, 0xF8, 0x03, 0x00, 0x00, 0xB0, b, 0xEE]); }
+    code.push(0xF4);
 
-    // place code at 0x0100
+    patch_rel8(&mut code, jnz_hdd_err, try_cd);
+    patch_rel8(&mut code, jnz_hdd_drq, read_hdd);
+    patch_rel8(&mut code, jmp_try_cd, try_cd);
+    patch_rel8(&mut code, jnz_cd_err, cd_err);
+    patch_rel8(&mut code, jnz_cd_drq, send_pkt);
+    patch_rel8(&mut code, jmp_cd_err1, cd_err);
+    patch_rel8(&mut code, jnz_cd_data_err, cd_err);
+    patch_rel8(&mut code, jnz_cd_data_drq, read_cd);
+    patch_rel8(&mut code, jmp_cd_err2, cd_err);
+
     let code_off = 0x0100usize;
+    assert!(code_off + code.len() < rom.len());
     rom[code_off..code_off + code.len()].copy_from_slice(&code);
-
-    // Reset vector at 0xFFFF0: jmp near rel32 to 0xF0100
-    // instruction at 0xFFFF0, next ip = 0xFFFF5
     let reset_off = 0xFFF0usize;
     let target = base + (code_off as u32);
     let next = base + 0xFFF5;
     let rel = (target as i32).wrapping_sub(next as i32);
     rom[reset_off] = 0xE9;
     rom[reset_off + 1..reset_off + 5].copy_from_slice(&rel.to_le_bytes());
-
     rom
 }
 

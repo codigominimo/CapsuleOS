@@ -20,7 +20,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE (puertos DISPI) con LFB en RAM guest, renderizado en tiempo real en ventana Win32 (DIB/StretchDIBits) y validación `test-framebuffer` | **Completado** |
 | **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratón, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyección de eventos Win32 desde GUI y validación `test-input` | **Completado** |
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
-| **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito; M12.3 OVMF/UEFI condicionado a viabilidad | En progreso (M12.1 completado) |
+| **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | En progreso (M12.1-M12.2 completados, scope acotado) |
 | **M13**| **Ubuntu Minimal / Server** | Arranque verificado de distribución Ubuntu Server mediante WHPX | Pendiente |
 | **M14**| **Ubuntu Desktop (GUI)** | Arranque verificado de entorno gráfico X11/Wayland de Ubuntu en ventana | Pendiente |
 | **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
@@ -84,11 +84,17 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - `VmConfig.firmware_bios_path`; CLI `capsule.exe test-firmware [bios_path]` valida firma 0x55AA en 0x7C00 y ejecucion del boot sector.
 - `capsule-cpu` amplia ISA minima para firmware/stub (ALU AL,imm8; 0x80 r/m8,imm8; TEST r/m8,r8; CLI/STI/CLD/STD NOP compat; JMP/CALL indirectos FF/4,/2).
 - Validacion: `cargo test --workspace`, `cargo build --release -p capsule-gui`, regresiones CLI relevantes y `test-firmware`.
-- Limitaciones: no SeaBIOS/OVMF completo verificado; sin modo real/segmentacion, IVT/INT, A20, PCI BIOS/DMA/IRQ delivery en CPU, ni ISO/El Torito. BIOS externa experimental/best-effort, soportada solo con caso reproducible validado.
+- Limitaciones: no SeaBIOS/OVMF completo verificado; sin modo real/segmentacion, IVT/INT, A20, PCI BIOS/DMA/IRQ delivery en CPU, ni ISO/El Torito completo. BIOS externa experimental/best-effort, soportada solo con caso reproducible validado.
 
-#### M12.2 - ISO/ATAPI CD-ROM boot (pendiente)
-- Objetivo: ATAPI/IDE compatible, ISO9660, El Torito (segun viabilidad) y prueba CLI.
+#### M12.2 - ISO/ATAPI CD-ROM boot (completado, scope acotado)
+- `capsule-devices::IdeController` soporta modo ATAPI mínimo por canal (primary/secondary), sectores 2048 bytes, signature ATAPI, `IDENTIFY PACKET DEVICE` (0xA1), `PACKET` (0xA0), y comandos SCSI básicos: `TEST UNIT READY`, `REQUEST SENSE`, `INQUIRY`, `READ CAPACITY(10)`, `READ(10/12)` (solo LBA 0/count pequeño en path validado), `MODE SENSE(10)` stub.
+- IRQ por canal: IDE primario IRQ14, IDE secundario IRQ15, reflejado a PIC por sondeo en `tick_platform`.
+- `capsule-vmm` expone `attach_secondary_master_atapi_disk` y `boot_from_cdrom_secondary_master`: parsea Boot Record Volume El Torito (LBA 17, "EL TORITO SPECIFICATION"), lee catalog LBA, valida validation entry y initial/default entry x86 no-emulation (bootable 0x88), carga imagen de boot en 0x7C00 (hasta 2048 bytes para el caso validado) y configura RIP=0x7C00, DL=0xE0. Fallback: carga LBA 0 si no hay El Torito válido.
+- BIOS stub integrado actualizado para intentar ATAPI secondary master tras fallo ATA primario (ruta PIO mínima); la ruta principal M12.2 validada es el helper Rust de boot CD-ROM.
+- CLI `capsule.exe test-cdrom [iso]`: self-test genera ISO El Torito determinista no-emulation, verifica parseo/carga/ejecución HLT+marker 0xCDB00712; ISO externa es experimental/best-effort.
+- Validacion: `cargo test --workspace`, `cargo build --release -p capsule-gui`, regresiones CLI relevantes, `test-firmware`, `test-cdrom`, `test-whpx` (SKIP seguro si host no soporta).
+- Limitaciones: ATAPI/El Torito mínimo (no-emulation x86, sin emulación floppy/hdd, sin múltiples entries, sin boot menu). Sin ISO9660 completo, sin INT 13h/extensions CD, sin DMA/UDMA, sin cambio de medio hotplug, sin integrarse con BIOS reales. ISOs de instaladores reales no soportadas.
 
 #### M12.3 - OVMF/UEFI (pendiente, condicionado)
 - Objetivo: carga UEFI/OVMF y ruta de boot reproducible. No se declarara soportado sin caso reproducible validado.
-- Bloqueadores: MMIO, IRQ/APIC/IOAPIC, CPU x86_64 mas completa, timers/dispositivos firmware.
+- Bloqueadores: MMIO, IRQ/APIC/IOAPIC, CPU x86_64 mas completa (modos/paginacion/excepciones/MSRs), timers ACPI/HPET, dispositivos firmware/PCI más completos.

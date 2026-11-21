@@ -15,6 +15,7 @@
 //! - `capsule.exe test-input`       : Verificacion de entrada PS/2 (i8042, teclado/raton, IRQ1/IRQ12) (M10).
 //! - `capsule.exe test-whpx`       : Verificacion del backend de virtualizacion por hardware WHPX (M11).
 //! - `capsule.exe test-firmware [bios]`: Verificacion de firmware BIOS/stub y boot desde disco (M12.1).
+//! - `capsule.exe test-cdrom [iso]` : Verificacion de ATAPI/ISO El Torito boot (M12.2) o ISO externa experimental.
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -1302,6 +1303,11 @@ fn open_disk_image_for_boot(path: &str) -> Result<Box<dyn BlockDevice>, Box<dyn 
     }
 }
 
+fn open_cdrom_image(path: &str) -> Result<Box<dyn BlockDevice>, Box<dyn std::error::Error>> {
+    // M12.2: ISO como imagen RAW de sectores 2048 (solo lectura recomendada; usamos RW open por API existente).
+    Ok(Box::new(RawDiskImage::open(path, 2048)?))
+}
+
 fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<dyn std::error::Error>> {
     let config = VmConfig {
         name: vm_name.to_string(),
@@ -1394,6 +1400,113 @@ fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::
     println!("==================================================");
 
     let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+fn run_test_cdrom(iso_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de CD-ROM/ISO ATAPI (Hito M12.2)      ");
+    println!("==================================================");
+
+    if let Some(path) = iso_path {
+        let disk = open_cdrom_image(path)?;
+        let config = VmConfig {
+            name: "CdromBootTest".to_string(),
+            vcpu_count: 1,
+            memory_size: ByteSize::from_mib(4),
+            backend: VmBackendKind::Software,
+            firmware_bios_path: None,
+        };
+        let mut vm = VirtualMachine::new(config)?;
+        vm.boot_from_cdrom_secondary_master(disk)?;
+        println!("  [OK] ISO externa cargada como ATAPI secondary master: {path}");
+        println!("  [INFO] RIP=0x{:X}, DL=0x{:02X}", vm.rip(), (vm.get_regs().rdx & 0xFF) as u8);
+        let exit = vm.run_steps(5_000_000)?;
+        println!("  [INFO] Salida VM: {:?}", exit.unwrap_or(VcpuExit::Shutdown));
+        println!("  Nota: boot ISO externo es experimental; El Torito/BIOS/CPU/IRQ pueden ser insuficientes.");
+        println!("==================================================");
+        return Ok(());
+    }
+
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let path = std::env::temp_dir().join(format!("capsuleos_m12_cdrom_{nanos}.iso"));
+    let sector_size: usize = 2048;
+    let total_sectors: u64 = 32;
+    let mut image = vec![0u8; sector_size * total_sectors as usize];
+
+    // Boot image at LBA 20: 512-byte boot sector with 0x55AA, writes marker and halts
+    let boot_lba: usize = 20;
+    let boot_off = boot_lba * sector_size;
+    // mov eax,0xCDB00712; mov ebx,0x600; mov [ebx],eax; hlt
+    let code: [u8; 13] = [0xB8, 0x12, 0x07, 0xB0, 0xCD, 0xBB, 0x00, 0x06, 0x00, 0x00, 0x89, 0x03, 0xF4];
+    image[boot_off..boot_off + code.len()].copy_from_slice(&code);
+    image[boot_off + 510] = 0x55;
+    image[boot_off + 511] = 0xAA;
+
+    // El Torito Boot Record Volume Descriptor at LBA 17
+    let lba17 = 17 * sector_size;
+    image[lba17] = 0x00;
+    image[lba17 + 1..lba17 + 6].copy_from_slice(b"CD001");
+    image[lba17 + 6] = 0x01;
+    let id = b"EL TORITO SPECIFICATION";
+    image[lba17 + 7..lba17 + 7 + id.len()].copy_from_slice(id);
+    // boot catalog LBA at 0x47 (little-endian u32) = 19
+    image[lba17 + 0x47..lba17 + 0x4B].copy_from_slice(&19u32.to_le_bytes());
+
+    // Boot catalog at LBA 19
+    let lba19 = 19 * sector_size;
+    // Validation Entry
+    image[lba19] = 0x01; // header id
+    image[lba19 + 1] = 0x00; // x86
+    image[lba19 + 0x1E] = 0x55;
+    image[lba19 + 0x1F] = 0xAA;
+    // checksum: sum of words 0x00..0x1F must be 0 (16-bit). compute.
+    let mut sum: u16 = 0;
+    for i in (0..0x20).step_by(2) {
+        let w = u16::from_le_bytes([image[lba19 + i], image[lba19 + i + 1]]);
+        sum = sum.wrapping_add(w);
+    }
+    let fix = 0u16.wrapping_sub(sum);
+    image[lba19 + 0x1C] = (fix & 0xFF) as u8;
+    image[lba19 + 0x1D] = (fix >> 8) as u8;
+    // Initial/Default Entry at 0x20
+    image[lba19 + 0x20] = 0x88; // bootable
+    image[lba19 + 0x21] = 0x00; // no emulation
+    image[lba19 + 0x26] = 1; // sector count in 512-byte sectors (u16 LE)
+    image[lba19 + 0x27] = 0;
+    image[lba19 + 0x28..lba19 + 0x2C].copy_from_slice(&(boot_lba as u32).to_le_bytes());
+
+    std::fs::write(&path, &image)?;
+
+    let config = VmConfig {
+        name: "CdromBootTest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(4),
+        backend: VmBackendKind::Software,
+        firmware_bios_path: None,
+    };
+    let mut vm = VirtualMachine::new(config)?;
+    let disk = RawDiskImage::open(&path, 2048)?;
+    vm.boot_from_cdrom_secondary_master(Box::new(disk))?;
+
+    assert_eq!(vm.rip(), 0x7C00, "RIP debe iniciar en 0x7C00 para CD boot");
+    let sig0 = vm.memory.read_u8(capsule_core::types::GuestAddress::new(0x7DFE)).unwrap_or(0);
+    let sig1 = vm.memory.read_u8(capsule_core::types::GuestAddress::new(0x7DFF)).unwrap_or(0);
+    assert_eq!([sig0, sig1], [0x55, 0xAA], "Firma 0x55AA no encontrada en boot CD-ROM");
+    println!("  [OK] El Torito parseado: boot catalog/default entry -> LBA {boot_lba}, imagen cargada en 0x7C00");
+
+    let exit = vm.run_steps(5_000_000)?;
+    assert_eq!(exit, Some(VcpuExit::Halt), "Boot CD-ROM debe finalizar con HLT");
+    let marker = vm.memory.read_u32(capsule_core::types::GuestAddress::new(0x0600)).unwrap_or(0);
+    assert_eq!(marker, 0xCDB00712, "Marker de boot CD-ROM incorrecto: 0x{marker:08X}");
+    println!("  [OK] Boot sector de ISO El Torito ejecuto (marker 0xCDB00712)");
+    println!("  [OK] ATAPI secondary master adjunto (0x170/0x376), IRQ15 cableada en PIC");
+
+    let _ = std::fs::remove_file(&path);
+    println!("--------------------------------------------------");
+    println!("  CD-ROM/ISO ATAPI (M12.2, scope acotado): EXITO");
+    println!("  Nota: ATAPI PIO minimo, El Torito no-emulation basico, sin ISO9660 completo ni BIOS INT 13h.");
+    println!("==================================================");
     Ok(())
 }
 
@@ -2313,6 +2426,15 @@ fn main() {
     if args.iter().any(|arg| arg == "test-serial" || arg == "--test-serial") {
         if let Err(e) = run_test_serial() {
             eprintln!("Error en test-serial: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(pos) = args.iter().position(|arg| arg == "test-cdrom" || arg == "--test-cdrom") {
+        let iso_path = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_cdrom(iso_path) {
+            eprintln!("Error en test-cdrom: {}", e);
             std::process::exit(1);
         }
         return;
