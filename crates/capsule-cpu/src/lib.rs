@@ -881,8 +881,7 @@ impl SimpleVcpu {
                 };
                 let slo = self.fetch_u8(mem)? as u16; let shi = self.fetch_u8(mem)? as u16; let sel = slo | (shi<<8);
                 self.regs.cs = sel;
-                self.regs.cs_base = if self.regs.real_mode || sel != 0 { (sel as u64) << 4 } else { 0 };
-                self.regs.rip = off;
+                if self.regs.real_mode { self.regs.cs_base = (sel as u64) << 4; self.regs.rip = off & 0xFFFF; } else { self.regs.cs_base = 0; self.regs.rip = off; }
                 Ok(None)
             }
 
