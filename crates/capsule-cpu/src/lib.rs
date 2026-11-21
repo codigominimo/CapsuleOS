@@ -562,6 +562,20 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
+            // PUSHFQ (0x9C)
+            0x9C => {
+                let val = self.regs.rflags | FLAG_RESERVED;
+                self.push_u64(mem, val)?;
+                Ok(None)
+            }
+            // POPFQ (0x9D)
+            0x9D => {
+                let val = self.pop_u64(mem)?;
+                self.regs.rflags = (val | FLAG_RESERVED) & !0x0000_0000_0003_0000; // keep RF/VM cleared in minimal model
+                self.regs.interrupts_enabled = (self.regs.rflags & FLAG_IF) != 0;
+                Ok(None)
+            }
+
             // JMP rel8 (0xEB)
             0xEB => {
                 let rel8 = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i8;
@@ -776,25 +790,13 @@ impl SimpleVcpu {
                 let val = ((self.regs.edx() as u64) << 32) | (self.regs.eax() as u64);
                 match ecx {
                     0x0000_001B => { /* IA32_APIC_BASE: store conceptually; device model not fully wired */ }
-                    0x0000_0174 => { /* IA32_SYSENTER_CS */ }
-                    0x0000_0175 => { /* IA32_SYSENTER_ESP */ }
-                    0x0000_0176 => { /* IA32_SYSENTER_EIP */ }
+                    0x0000_0174 | 0x0000_0175 | 0x0000_0176 => { /* SYSENTER */ }
                     0xC000_0080 => { // EFER
                         self.regs.efer = val;
-                        // LMA is read-only bit derived from PG+LME in real HW; approximate
-                        if self.regs.cr0_pg() && self.regs.efer_lme() {
-                            self.regs.efer |= 1 << 10;
-                        } else {
-                            self.regs.efer &= !(1 << 10);
-                        }
+                        if self.regs.cr0_pg() && self.regs.efer_lme() { self.regs.efer |= 1 << 10; } else { self.regs.efer &= !(1 << 10); }
                     }
-                    0xC000_0081 => { /* STAR */ }
-                    0xC000_0082 => { /* LSTAR */ }
-                    0xC000_0083 => { /* CSTAR */ }
-                    0xC000_0084 => { /* SFMASK */ }
-                    0xC000_0100 => { /* FS_BASE */ }
-                    0xC000_0101 => { /* GS_BASE */ }
-                    0xC000_0102 => { /* KERNEL_GS_BASE */ }
+                    0xC000_0081..=0xC000_0084 => { /* STAR/LSTAR/CSTAR/SFMASK */ }
+                    0xC000_0100..=0xC000_0102 => { /* FS/GS/KERNEL_GS base */ }
                     _ => {}
                 }
                 Ok(None)
@@ -804,12 +806,34 @@ impl SimpleVcpu {
                 let val = match ecx {
                     0x0000_001B => 0xFEE0_0900u64, // IA32_APIC_BASE stub
                     0xC000_0080 => self.regs.efer,
-                    0xC000_0081..=0xC000_0084 => 0,
-                    0xC000_0100..=0xC000_0102 => 0,
                     _ => 0,
                 };
                 self.regs.set_eax(val as u32);
                 self.regs.set_edx((val >> 32) as u32);
+                Ok(None)
+            }
+            // CPUID (0F A2) - minimal deterministic stub
+            0xA2 => {
+                let leaf = self.regs.eax();
+                let sub = self.regs.ecx();
+                let (a,b,c,d) = match leaf {
+                    0x0 => (0x1, u32::from_le_bytes(*b"Caps"), u32::from_le_bytes(*b"uleO"), u32::from_le_bytes(*b"SVM ")),
+                    0x1 => { let mut d = 0u32; d |= 1<<0; d |= 1<<4; d |= 1<<8; d |= 1<<15; d |= 1<<23; (0x0000_0600, 0, 0, d) },
+                    0x8000_0000 => (0x8000_0001u32, 0, 0, 0),
+                    0x8000_0001 => { let mut d = 0u32; d |= 1<<29; d |= 1<<20; let mut c = 0u32; c |= 1<<0; (0,0,c,d) },
+                    _ => { let _ = sub; (0,0,0,0) }
+                };
+                self.regs.set_eax(a as u32);
+                self.regs.set_ebx(b);
+                self.regs.set_ecx(c);
+                self.regs.set_edx(d);
+                Ok(None)
+            }
+            // RDTSC (0F 31)
+            0x31 => {
+                let tsc = 0u64; // deterministic stub; real TSC/timers pending
+                self.regs.set_eax(tsc as u32);
+                self.regs.set_edx((tsc >> 32) as u32);
                 Ok(None)
             }
             _ => Ok(Some(CpuExitReason::InvalidOpcode(0x0F))),
