@@ -235,6 +235,15 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
+            // PUSH/POP segment registers (real/compat)
+            0x06 => { self.push_val(mem, self.regs.es as u64, !is_64bit && (operand_size_16||real_mode), is_64bit)?; Ok(None) }
+            0x0E => { self.push_val(mem, self.regs.cs as u64, !is_64bit && (operand_size_16||real_mode), is_64bit)?; Ok(None) }
+            0x16 => { self.push_val(mem, self.regs.ss as u64, !is_64bit && (operand_size_16||real_mode), is_64bit)?; Ok(None) }
+            0x1E => { self.push_val(mem, self.regs.ds as u64, !is_64bit && (operand_size_16||real_mode), is_64bit)?; Ok(None) }
+            0x07 => { let v=self.pop_val(mem,!is_64bit&&(operand_size_16||real_mode),is_64bit)? as u16; self.regs.es=v; Ok(None) }
+            0x17 => { let v=self.pop_val(mem,!is_64bit&&(operand_size_16||real_mode),is_64bit)? as u16; self.regs.ss=v; Ok(None) }
+            0x1F => { let v=self.pop_val(mem,!is_64bit&&(operand_size_16||real_mode),is_64bit)? as u16; self.regs.ds=v; Ok(None) }
+
             // NOP
             0x90 => Ok(None),
 
@@ -854,11 +863,10 @@ impl SimpleVcpu {
                 Ok(None)
             }
 
-            // JMP rel32 (0xE9)
+            // JMP rel16/rel32 (0xE9)
             0xE9 => {
-                let rel32 = mem.read_u32(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i32;
-                self.regs.rip += 4;
-                self.regs.rip = (self.regs.rip as i64).wrapping_add(rel32 as i64) as u64;
+                let rel = if !is_64bit && (operand_size_16 || real_mode) { self.fetch_u16(mem)? as i16 as i64 } else { self.fetch_u32(mem)? as i32 as i64 };
+                self.regs.rip = (self.regs.rip as i64).wrapping_add(rel) as u64;
                 Ok(None)
             }
 
@@ -1161,7 +1169,7 @@ impl SimpleVcpu {
                     0x8F => !self.regs.zf() && (self.regs.sf() == self.regs.of()),
                     _ => false,
                 };
-                if cond { self.regs.rip = (self.regs.rip as i64).wrapping_add(rel32 as i64) as u64; }
+                if cond { self.regs.rip = (self.regs.rip as i64).wrapping_add(rel32 as i64) as u64; if real_mode { self.regs.rip &= 0xFFFF; } }
                 Ok(None)
             }
             // MOVZX r, r/m8 (0F B6) / r, r/m16 (0F B7)
