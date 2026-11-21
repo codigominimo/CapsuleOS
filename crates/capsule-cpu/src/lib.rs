@@ -717,8 +717,12 @@ impl SimpleVcpu {
                 let modrm = ModRm::parse(modrm_byte, rex);
                 let rm_loc = OperandLocation::resolve_rm(&modrm, rex, &mut self.regs, mem)?;
                 match modrm.reg & 0x07 {
-                    2 => { // LGDT - accept and ignore (minimal)
-                        let _ = rm_loc.read_val(is_64bit, &self.regs, mem)?;
+                    2 => { // LGDT
+                        let addr = match rm_loc { OperandLocation::Memory(a) => a, _ => return Err("LGDT requires memory operand".into()) };
+                        let mut buf = [0u8; 10];
+                        mem.read_bytes(addr, &mut buf).map_err(|e| e.to_string())?;
+                        self.regs.gdtr.limit = u16::from_le_bytes([buf[0], buf[1]]);
+                        self.regs.gdtr.base = u64::from_le_bytes([buf[2],buf[3],buf[4],buf[5],buf[6],buf[7],buf[8],buf[9]]);
                         Ok(None)
                     }
                     3 => { // LIDT
@@ -729,9 +733,11 @@ impl SimpleVcpu {
                         self.regs.idtr.base = u64::from_le_bytes([buf[2],buf[3],buf[4],buf[5],buf[6],buf[7],buf[8],buf[9]]);
                         Ok(None)
                     }
-                    0 => { // SGDT - write pseudo descriptor (minimal zero)
+                    0 => { // SGDT
                         if let OperandLocation::Memory(a) = rm_loc {
                             let mut buf = [0u8; 10];
+                            buf[0..2].copy_from_slice(&self.regs.gdtr.limit.to_le_bytes());
+                            buf[2..10].copy_from_slice(&self.regs.gdtr.base.to_le_bytes());
                             mem.write_bytes(a, &buf).map_err(|e| e.to_string())?;
                         }
                         Ok(None)
