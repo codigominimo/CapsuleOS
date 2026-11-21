@@ -269,7 +269,9 @@ impl VirtualMachine {
             (0xF_0000u64, 0xF_FFF0u64)
         } else {
             let size = data.len() as u64;
-            let base = 0x0010_0000u64.saturating_sub(size).max(min_base.max(0xE_0000));
+            // BIOS ROM grande (p.ej. SeaBIOS 128/256KB): alinear al tope de 1MiB.
+            // Permitir base 0xC0000 para imágenes de 256KB.
+            let base = 0x0010_0000u64.saturating_sub(size).max(0xC_0000);
             (base, 0xF_FFF0u64)
         };
         let end = map_base + (data.len() as u64);
@@ -324,9 +326,9 @@ impl VirtualMachine {
         let entry = self.map_bios_rom(bios)?;
  
         let mut regs = Registers::new();
-        regs.rip = entry;
+        if entry == 0xF_FFF0 { regs.cs = 0xF000; regs.cs_base = 0x000F_0000; regs.rip = 0xFFF0; regs.real_mode = true; } else { regs.cs = 0; regs.cs_base = 0; regs.rip = entry; regs.real_mode = false; }
         regs.rsp = 0x0007_FFF0;
-        regs.rdx = 0x80; // DL = primer disco duro (convención BIOS)
+        regs.rdx = 0x80; // DL = primer disco duro (convenciÃ³n BIOS)
         regs.rflags = 0x2;
         self.set_regs(&regs);
         Ok(())
@@ -1164,18 +1166,14 @@ fn regs_to_whpx(r: &Registers) -> WhpxRegs {
 }
 
 fn whpx_to_regs(r: WhpxRegs) -> Registers {
-    Registers {
-        rax: r.rax, rbx: r.rbx, rcx: r.rcx, rdx: r.rdx,
-        rsi: r.rsi, rdi: r.rdi, rbp: r.rbp, rsp: r.rsp,
-        r8: r.r8, r9: r.r9, r10: r.r10, r11: r.r11,
-        r12: r.r12, r13: r.r13, r14: r.r14, r15: r.r15,
-        rip: r.rip, rflags: r.rflags,
-        idtr: Default::default(),
-        gdtr: Default::default(),
-        ldtr: 0, tr: 0,
-        cr0: 0, cr2: 0, cr3: 0, cr4: 0, efer: 0,
-        interrupts_enabled: (r.rflags & 0x200) != 0,
-    }
+    let mut regs = Registers::new();
+    regs.rax = r.rax; regs.rbx = r.rbx; regs.rcx = r.rcx; regs.rdx = r.rdx;
+    regs.rsi = r.rsi; regs.rdi = r.rdi; regs.rbp = r.rbp; regs.rsp = r.rsp;
+    regs.r8 = r.r8; regs.r9 = r.r9; regs.r10 = r.r10; regs.r11 = r.r11;
+    regs.r12 = r.r12; regs.r13 = r.r13; regs.r14 = r.r14; regs.r15 = r.r15;
+    regs.rip = r.rip; regs.rflags = r.rflags;
+    regs.interrupts_enabled = (r.rflags & 0x200) != 0;
+    regs
 }
 
 fn decode_modrm_addr(regs: &Registers, bytes: &[u8;15], mut i: usize, modb: u8, rm: u8, rex_x: bool, addr32: bool) -> (u64, usize) {

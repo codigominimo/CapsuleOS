@@ -76,41 +76,80 @@ impl SimpleVcpu {
         Ok(val)
     }
 
-    /// Ejecuta una sola instrucciÃ³n en memoria fÃ­sica a partir de `regs.rip`.
+    fn linear_ip(&self) -> u64 { self.regs.cs_base.wrapping_add(self.regs.rip) }
+    fn fetch_u8(&mut self, mem: &mut dyn MemoryBus) -> Result<u8, String> {
+        let linear = self.linear_ip();
+        let b = mem.read_u8(GuestAddress::new(linear))
+            .map_err(|e| format!("Error leyendo opcode en RIP=0x{:X} CS.base=0x{:X} linear=0x{:X}: {}", self.regs.rip, self.regs.cs_base, linear, e))?;
+        self.regs.rip = self.regs.rip.wrapping_add(1);
+        Ok(b)
+    }
+
+    /// Ejecuta una sola instrucción en memoria física a partir de `regs.rip`.
     pub fn step(&mut self, mem: &mut dyn MemoryBus) -> Result<Option<CpuExitReason>, String> {
-        // 1. Decodificar prefijos legacy/REX (soporte mÃ­nimo: 0x66 operand-size)
-        let mut operand_size_16 = false;
+        static TRACE_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let trace = std::env::var_os("CAPSULE_TRACE_FW").is_some();
+        let rip_before = self.regs.rip;
+        let linear_before = self.linear_ip();
+        let real_mode = self.regs.real_mode;
+        let mut operand_size_16 = real_mode;
+        let mut addr_size_16 = real_mode;
         let mut rex = RexPrefix::default();
-        let mut opcode = mem
-            .read_u8(GuestAddress::new(self.regs.rip))
-            .map_err(|e| format!("Error leyendo opcode en 0x{:016X}: {}", self.regs.rip, e))?;
-
-        if opcode == 0x66 {
-            operand_size_16 = true;
-            self.regs.rip += 1;
-            opcode = mem
-                .read_u8(GuestAddress::new(self.regs.rip))
-                .map_err(|e| format!("Error leyendo opcode tras prefijo 0x66: {}", e))?;
+        let mut opcode = self.fetch_u8(mem)?;
+        if trace {
+            let n = TRACE_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 300 { eprintln!("[fwtrace {n:03}] rip=0x{:X} lin=0x{:X} op=0x{:02X} cr0={:X}", rip_before, linear_before, opcode, self.regs.cr0); }
         }
-
-        if let Some(parsed_rex) = RexPrefix::parse(opcode) {
-            rex = parsed_rex;
-            self.regs.rip += 1;
-            opcode = mem
-                .read_u8(GuestAddress::new(self.regs.rip))
-                .map_err(|e| format!("Error leyendo opcode tras REX: {}", e))?;
+        // Legacy prefixes (minimal): 0x66 operand-size toggle, 0x67 address-size toggle
+        loop {
+            match opcode {
+                0x66 => { operand_size_16 = !real_mode; opcode = self.fetch_u8(mem)?; }
+                0x67 => { addr_size_16 = !real_mode; opcode = self.fetch_u8(mem)?; }
+                0xF0 | 0xF2 | 0xF3 | 0x2E | 0x36 | 0x3E | 0x26 | 0x64 | 0x65 => { opcode = self.fetch_u8(mem)?; }
+                _ => break,
+            }
         }
-
-        self.regs.rip += 1;
-        let is_64bit = rex.w;
+        if !real_mode {
+            if let Some(parsed_rex) = RexPrefix::parse(opcode) { rex = parsed_rex; opcode = self.fetch_u8(mem)?; }
+        }
+        let is_64bit = !real_mode && rex.w;
 
         if opcode == 0x0F {
-            let op2 = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
-            self.regs.rip += 1;
+            let op2 = self.fetch_u8(mem)?;
             return self.step_0f(op2, &rex, is_64bit, mem);
         }
 
         match opcode {
+            // CLI/STI - honor IF in software model
+            0xFA => { self.regs.interrupts_enabled = false; self.regs.rflags &= !FLAG_IF; Ok(None) }
+            0xFB => { self.regs.interrupts_enabled = true; self.regs.rflags |= FLAG_IF; Ok(None) }
+            // CLD/STD minimal
+            0xFC => { self.regs.rflags &= !FLAG_DF; Ok(None) }
+            0xFD => { self.regs.rflags |= FLAG_DF; Ok(None) }
+            // PUSHA/POPA (real/v86/compat minimal)
+            0x60 => {
+                let sp = self.regs.rsp;
+                if operand_size_16 {
+                    let vals = [self.regs.rax as u16,self.regs.rcx as u16,self.regs.rdx as u16,self.regs.rbx as u16,sp as u16,self.regs.rbp as u16,self.regs.rsi as u16,self.regs.rdi as u16];
+                    for v in vals { self.regs.rsp = self.regs.rsp.wrapping_sub(2); let a=GuestAddress::new(self.regs.rsp); mem.write_bytes(a,&v.to_le_bytes()).map_err(|e|e.to_string())?; }
+                } else {
+                    let vals = [self.regs.eax(),self.regs.ecx(),self.regs.edx(),self.regs.ebx(),self.regs.rsp as u32,self.regs.get_reg32(5),self.regs.get_reg32(6),self.regs.get_reg32(7)];
+                    for v in vals { self.push_u64(mem, v as u64)?; }
+                }
+                Ok(None)
+            }
+            0x61 => {
+                if operand_size_16 {
+                    let mut pop16 = |this: &mut Self| -> Result<u16,String> { let a=GuestAddress::new(this.regs.rsp); let v=mem.read_u16(a).map_err(|e|e.to_string())?; this.regs.rsp=this.regs.rsp.wrapping_add(2); Ok(v) };
+                    let di=pop16(self)?; let si=pop16(self)?; let bp=pop16(self)?; let _sp_skip=pop16(self)?; let bx=pop16(self)?; let dx=pop16(self)?; let cx=pop16(self)?; let ax=pop16(self)?;
+                    self.regs.rdi=(self.regs.rdi&!0xFFFF)|di as u64; self.regs.rsi=(self.regs.rsi&!0xFFFF)|si as u64; self.regs.rbp=(self.regs.rbp&!0xFFFF)|bp as u64;
+                    self.regs.rbx=(self.regs.rbx&!0xFFFF)|bx as u64; self.regs.rdx=(self.regs.rdx&!0xFFFF)|dx as u64; self.regs.rcx=(self.regs.rcx&!0xFFFF)|cx as u64; self.regs.rax=(self.regs.rax&!0xFFFF)|ax as u64;
+                } else {
+                    let edi=self.pop_u64(mem)? as u32; let esi=self.pop_u64(mem)? as u32; let ebp=self.pop_u64(mem)? as u32; let _=self.pop_u64(mem)?; let ebx=self.pop_u64(mem)? as u32; let edx=self.pop_u64(mem)? as u32; let ecx=self.pop_u64(mem)? as u32; let eax=self.pop_u64(mem)? as u32;
+                    self.regs.set_reg32(0,eax); self.regs.set_reg32(1,ecx); self.regs.set_reg32(2,edx); self.regs.set_reg32(3,ebx); self.regs.set_reg32(5,ebp); self.regs.set_reg32(6,esi); self.regs.set_reg32(7,edi);
+                }
+                Ok(None)
+            }
             // NOP
             0x90 => Ok(None),
 
@@ -589,6 +628,22 @@ impl SimpleVcpu {
                 let rel32 = mem.read_u32(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i32;
                 self.regs.rip += 4;
                 self.regs.rip = (self.regs.rip as i64).wrapping_add(rel32 as i64) as u64;
+                Ok(None)
+            }
+
+            // JMP ptr16:16/ptr16:32 (0xEA) - real/protected mode far jump, minimal
+            0xEA => {
+                let off = if operand_size_16 {
+                    let lo = self.fetch_u8(mem)? as u64; let hi = self.fetch_u8(mem)? as u64; lo | (hi<<8)
+                } else {
+                    let b0 = self.fetch_u8(mem)? as u64; let b1 = self.fetch_u8(mem)? as u64;
+                    let b2 = self.fetch_u8(mem)? as u64; let b3 = self.fetch_u8(mem)? as u64;
+                    b0 | (b1<<8) | (b2<<16) | (b3<<24)
+                };
+                let slo = self.fetch_u8(mem)? as u16; let shi = self.fetch_u8(mem)? as u16; let sel = slo | (shi<<8);
+                self.regs.cs = sel;
+                self.regs.cs_base = if self.regs.real_mode || sel != 0 { (sel as u64) << 4 } else { 0 };
+                self.regs.rip = off;
                 Ok(None)
             }
 

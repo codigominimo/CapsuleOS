@@ -29,6 +29,8 @@ pub struct Registers {
     pub r15: u64,
     pub rip: u64,
     pub rflags: u64,
+    pub cs: u16, pub ds: u16, pub es: u16, pub ss: u16, pub fs: u16, pub gs: u16,
+    pub cs_base: u64,
     pub idtr: Idtr,
     pub gdtr: Idtr,
     pub ldtr: u16,
@@ -39,12 +41,15 @@ pub struct Registers {
     pub cr4: u64,
     pub efer: u64,
     pub interrupts_enabled: bool, // IF logical model for software backend
+    pub real_mode: bool,
 }
 
 impl Registers {
     pub fn new() -> Self {
         Self {
             rflags: FLAG_RESERVED,
+            cs: 0, ds: 0, es: 0, ss: 0, fs: 0, gs: 0,
+            cs_base: 0,
             idtr: Idtr::default(),
             gdtr: Idtr::default(),
             ldtr: 0,
@@ -55,6 +60,7 @@ impl Registers {
             cr4: 0,
             efer: 0,
             interrupts_enabled: false,
+            real_mode: false,
             ..Default::default()
         }
     }

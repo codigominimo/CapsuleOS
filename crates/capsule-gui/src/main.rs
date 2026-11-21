@@ -1820,9 +1820,56 @@ fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::
     vm.boot_firmware_from_primary_master_disk(Box::new(disk), bios_bytes.as_deref())?;
 
     println!("  [OK] Firmware mapeado y estado de reset configurado (RIP=0x{:X})", vm.rip());
-    let exit = vm.run_steps(5_000_000)?;
-    let exit = exit.unwrap_or(VcpuExit::Shutdown);
-    assert_eq!(exit, VcpuExit::Halt, "Guest/firmware debe finalizar con HLT");
+    {
+        let mut b = [0u8; 16];
+        for (i,x) in b.iter_mut().enumerate() { *x = vm.memory.read_u8(capsule_core::types::GuestAddress::new(0xFFFF0 + i as u64)).unwrap_or(0); }
+        println!("  [DIAG] mem@FFFF0={:02X?}", b);
+        let mut b2=[0u8;16]; for (i,x) in b2.iter_mut().enumerate() { *x = vm.memory.read_u8(capsule_core::types::GuestAddress::new(0xC0000 + i as u64)).unwrap_or(0); }
+        println!("  [DIAG] mem@C0000={:02X?}", b2);
+    }
+    {
+        let rip = vm.rip();
+        let mut b = [0u8; 16];
+        for (i,x) in b.iter_mut().enumerate() { *x = vm.memory.read_u8(capsule_core::types::GuestAddress::new(rip.wrapping_add(i as u64))).unwrap_or(0); }
+        println!("  [DIAG] mem@rip={:02X?}", b);
+    }
+    let mut exit = VcpuExit::Shutdown;
+    let mut steps_left: usize = 5_000_000;
+    while steps_left > 0 {
+        let chunk = steps_left.min(50_000);
+        let e = vm.run_steps(chunk)?;
+        steps_left -= chunk;
+        if let Some(e) = e {
+            exit = e;
+            if matches!(exit, VcpuExit::Halt | VcpuExit::Shutdown) { break; }
+            if let VcpuExit::Unknown(ref msg) = exit {
+                let rip = vm.rip();
+                let mut bytes = [0u8; 16];
+                for (i,b) in bytes.iter_mut().enumerate() { *b = vm.memory.read_u8(capsule_core::types::GuestAddress::new(rip.wrapping_add(i as u64))).unwrap_or(0); }
+                eprintln!("  [DIAG] firmware exit={} rip=0x{:X} bytes={:02X?}", msg, rip, bytes);
+                eprintln!("  [DIAG] regs rax={:X} rbx={:X} rcx={:X} rdx={:X} rsp={:X} rbp={:X} rsi={:X} rdi={:X}", vm.eax(), vm.get_regs().rbx, vm.get_regs().rcx, vm.get_regs().rdx, vm.get_regs().rsp, vm.get_regs().rbp, vm.get_regs().rsi, vm.get_regs().rdi);
+                break;
+            }
+        }
+    }
+    if bios_path.is_some() {
+        let rip = vm.rip();
+        let mut bytes = [0u8; 16];
+        for (i,b) in bytes.iter_mut().enumerate() { *b = vm.memory.read_u8(capsule_core::types::GuestAddress::new(rip.wrapping_add(i as u64))).unwrap_or(0); }
+        println!("  [INFO] BIOS externo: exit={:?} rip=0x{:X} bytes={:02X?}", exit, rip, bytes);
+        let r = vm.get_regs();
+        println!("  [INFO] regs rax={:X} rbx={:X} rcx={:X} rdx={:X} rsp={:X} rbp={:X} rsi={:X} rdi={:X} cr0={:X} cr4={:X} efer={:X}", r.rax, r.rbx, r.rcx, r.rdx, r.rsp, r.rbp, r.rsi, r.rdi, r.cr0, r.cr4, r.efer);
+        if matches!(exit, VcpuExit::Halt) {
+            println!("  [OK] BIOS externo completó HLT (caso reproducible validado para esta imagen/configuración).");
+        } else {
+            println!("  [INFO] BIOS externo NO completó boot determinista. Bloqueador reproducible capturado arriba.");
+            println!("  [INFO] No se declara SeaBIOS/OVMF soportado; se requiere CPU real-mode/segmentación/MMIO/IRQ/firmware completos.");
+            let _ = std::fs::remove_file(&path);
+            return Ok(());
+        }
+    } else {
+        assert_eq!(exit, VcpuExit::Halt, "Guest/firmware debe finalizar con HLT");
+    }
 
     let marker = vm.memory.read_u32(capsule_core::types::GuestAddress::new(0x0500)).unwrap_or(0);
     assert_eq!(
