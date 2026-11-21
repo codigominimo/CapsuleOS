@@ -23,7 +23,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | Completado (scope acotado/condicionado) |
 | **M13**| **Ubuntu Minimal / Server** | Slice condicionado: validación de ruta Linux direct boot (kernel/initrd/cmdline) sintética y CLI best-effort para imágenes externas; Ubuntu Server real no declarado soportado | Completado (condicionado/bloqueado) |
 | **M14**| **Ubuntu Desktop (GUI)** | Slice condicionado: validación determinista de plumbing GUI (VBE framebuffer + PS/2 input + Linux direct boot); Ubuntu Desktop/X11/Wayland real no soportado | Completado (condicionado/bloqueado) |
-| **M15**| **Capsule Bundle Format** | Formato binario mínimo (magic/version/compression/manifest/payload) con writer/reader y CLI `test-bundle`; compresión real/firma/PE append pendientes | Completado (scope acotado) |
+| **M15**| **Capsule Bundle Format** | Formato binario (magic/version/compression/manifest/payload), v2 con deflate+CRC32, writer/reader/validación y CLI `test-bundle`; firma/cifrado/streaming pendientes | Completado (scope acotado) |
 | **M16**| **Capsule Builder CLI** | CLI `capsule build <input> [out.exe]` / `test-capsule-build`: empaqueta input en bundle y lo appendea a copia del runtime EXE; sin boot real desde payload | Completado (scope acotado) |
 | **M17**| **Single-EXE Self-Contained** | EXE autocontenido por append+footer (bundle detectado en el propio EXE); sin compresión/firma/streaming/boot de OS real desde payload | Completado (scope acotado) |
 | **M18**| **Windows Guest (WinPE / Win10)**| Slice condicionado/bloqueado: CLI `test-windows-guest` reporta bloqueadores y no declara soporte; sin boot Windows real | Completado (condicionado/bloqueado) |
@@ -119,12 +119,11 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - **Bloqueadores para Ubuntu Desktop real**: MMIO, IRQ/APIC/IOAPIC/IDT delivery, CPU x86_64 completa, timers ACPI/HPET/APIC, GPU/virtio-gpu/drm/kms, UEFI/firmware, USB/HID completo, almacenamiento/red/driver stack Linux completo.
 
 ### Hito M15 (completado, scope acotado)
-- Crate `capsule-bundle` con formato binario mínimo: magic `CAPSULE\0`, version=1, compression (`None`), manifest length, payload stored length, payload uncompressed length, manifest UTF-8 key=value, payload bytes.
-- `CapsuleManifest` incluye `name`, `guest_os`, `backend`, `memory_mib`, `vcpus`. API: `write_to_file`/`read_from_file`/`from_bytes`, validación de magic/version/compression/truncation.
-- CLI `capsule.exe test-bundle [path]`: genera bundle determinista temporal, hace roundtrip y valida manifest/payload; si se pasa path, lo conserva.
-- Validación: `cargo test -p capsule-bundle`, `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-bundle`, regresiones CLI clave.
-- Limitaciones: sin compresión real (zstd/lz4), sin firma/hash criptográfico, sin streaming por bloques, sin append en PE, sin carga de VM desde bundle, sin metadatos de discos/kernel/initrd/firmware completos.
-
+- Crate `capsule-bundle` con formato binario: magic `CAPSULE\0`, v2, compresión (`None`/`Deflate`), longitudes, CRC32 manifest/payload, manifest UTF-8 key=value, payload. v1 legacy legible.
+- `CapsuleManifest` incluye `name`, `guest_os`, `backend`, `memory_mib`, `vcpus`, `payload_kind`, `kernel_cmdline`, `initrd_bytes`, `disk_sector_size`. API: `write_to_file`/`read_from_file`/`from_bytes`, validación de magic/version/compression/truncation/CRC.
+- CLI `capsule.exe test-bundle [path]`: roundtrip determinista, deflate+CRC32, prueba de corrupción.
+- Validación: `cargo test -p capsule-bundle`, `cargo test --workspace`, `cargo build --release -p capsule-gui`, `test-bundle`.
+- Limitaciones: sin firma criptográfica/cifrado, sin streaming por bloques, sin manifiesto completo de boot multi-artifact.
 ### Hito M16/M17 (completado, scope acotado)
 - `capsule-bundle` añade append/detección en EXE: `append_to_exe`, `read_from_appended_exe`, footer `CAPSLEXE + bundle_len + version + reserved`.
 - CLI `capsule.exe build <input> [out.exe]` y `capsule.exe test-capsule-build [input] [out.exe]`: copia el runtime EXE actual, appendea bundle con payload del input, y valida que el bundle appendado se puede leer desde el EXE generado.

@@ -47,8 +47,8 @@ Este documento describe la compatibilidad planeada y verificada de CapsuleOS tan
 | **VHD Fixed (512-byte)** | Verificado (tests M5) | Verificado (tests M5) | Verificado (overlay COW, M6) | Soportado (fixed, sector 512) |
 | **ISO 9660 / El Torito (.iso)** | Parcial M12.2 (ATAPI PIO mínimo, 2048-byte sectors, Boot Record Volume + catalog + initial/default x86 no-emulation; `test-cdrom` determinista) | No (Solo lectura / imagen externa experimental) | No (overlay no validado para ISO) | Parcial (ATAPI secondary master, IRQ15, sin INT 13h CD/ISO9660 completo) |
 | **UEFI/OVMF firmware (.fd/.rom)** | Condicionado M12.3 (mapeo ROM + reset determinista; `test-uefi` stub; OVMF externo best-effort) | No | No | **No soportado** - plumbing mínimo, sin servicios UEFI/runtime/GOP/NVRAM/Secure Boot; bloqueado por MMIO/IRQ/APIC/CPU completa/timers |
-| **Capsule Bundle (`.cap`, M15)** | Verificado (formato mínimo: magic/version/manifest/payload, roundtrip, `test-bundle`) | N/A (es contenedor) | No | Scope acotado: sin compresión real, firma, append PE/Single-EXE, ni carga directa de VM desde bundle |
-| **Single-file Capsule EXE append (M16/M17)** | Verificado (append+footer `CAPSLEXE`, `build`/`test-capsule-build`) | N/A | No | Scope acotado: no boot real de OS desde payload; sin compresión/firma/streaming/manifest boot completo |
+| **Capsule Bundle (`.cap`, M15)** | Verificado (v2 deflate+CRC32, manifest+payload CRC, roundtrip/corrupción, `test-bundle`) | N/A (es contenedor) | No | Scope acotado: sin firma criptográfica/cifrado, sin streaming; carga desde EXE appendada es best-effort por kind |
+| **Single-file Capsule EXE append (M16/M17)** | Verificado (append+footer `CAPSLEXE`, `build`/`test-capsule-build`; boot best-effort raw-disk/boot-sector/linux-kernel/iso al iniciar EXE) | N/A | No | Scope acotado: no firma/AV-hardening; soporte OS real no declarado; depende de límites CPU/dispositivos |
 | **VHD Dynamic** | Planeado | Planeado | Planeado | Planeado |
 | **VHDX** | Planeado | Planeado | Planeado | Planeado |
 | **QCOW2** | Planeado | Planeado | Planeado | Planeado |
