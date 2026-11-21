@@ -1074,7 +1074,7 @@ impl SimpleVcpu {
                     self.regs.set_reg64(rm, val);
                 } else {
                     let val = self.regs.get_reg64(rm);
-                    match cr { 0 => self.regs.cr0 = val, 2 => self.regs.cr2 = val, 3 => self.regs.cr3 = val, 4 => self.regs.cr4 = val, _ => {} }
+                    match cr { 0 => { self.regs.cr0 = val; self.regs.real_mode = (self.regs.cr0 & 1) == 0; }, 2 => self.regs.cr2 = val, 3 => self.regs.cr3 = val, 4 => self.regs.cr4 = val, _ => {} }
                 }
                 Ok(None)
             }
