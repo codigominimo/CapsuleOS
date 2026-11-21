@@ -642,12 +642,18 @@ impl SimpleVcpu {
                 self.regs.rip += 1;
                 let modrm = ModRm::parse(modrm_byte, &rex);
                 let seg_base = self.seg_override_base.unwrap_or(if real_mode { (self.regs.ds as u64)<<4 } else { 0 }); let rm_loc = OperandLocation::resolve_rm_with_seg(&modrm, &rex, &mut self.regs, mem, real_mode || addr_size_16, seg_base)?;
-                let dst_val = rm_loc.read_val(is_64bit, &self.regs, mem)?;
+                let size16 = !is_64bit && (operand_size_16 || real_mode);
+                let dst_val = if is_64bit { rm_loc.read_val(true, &self.regs, mem)? }
+                    else if size16 { rm_loc.read_u16(&self.regs, mem)? as u64 }
+                    else { rm_loc.read_val(false, &self.regs, mem)? };
 
                 let imm: u64 = if is_imm8 {
                     let imm8 = mem.read_u8(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())? as i8;
                     self.regs.rip += 1;
-                    if is_64bit { imm8 as i64 as u64 } else { imm8 as i32 as u32 as u64 }
+                    imm8 as i32 as u32 as u64
+                } else if size16 {
+                    let imm16 = self.fetch_u16(mem)? as i16;
+                    imm16 as i32 as u32 as u64
                 } else {
                     let imm32 = mem.read_u32(GuestAddress::new(self.regs.rip)).map_err(|e| e.to_string())?;
                     self.regs.rip += 4;
@@ -655,59 +661,25 @@ impl SimpleVcpu {
                 };
 
                 match modrm.reg & 0x07 {
-                    0 => {
-                        // ADD
-                        if is_64bit {
-                            let res = dst_val.wrapping_add(imm);
-                            update_add_flags_u64(&mut self.regs.rflags, dst_val, imm, res);
-                            rm_loc.write_val(res, true, &mut self.regs, mem)?;
-                        } else {
-                            let res = (dst_val as u32).wrapping_add(imm as u32);
-                            update_add_flags_u32(&mut self.regs.rflags, dst_val as u32, imm as u32, res);
-                            rm_loc.write_val(res as u64, false, &mut self.regs, mem)?;
-                        }
+                    0 => { // ADD
+                        if is_64bit { let res=dst_val.wrapping_add(imm); update_add_flags_u64(&mut self.regs.rflags,dst_val,imm,res); rm_loc.write_val(res,true,&mut self.regs,mem)?; }
+                        else if size16 { let res=(dst_val as u16).wrapping_add(imm as u16); update_add_flags_u16(&mut self.regs.rflags,dst_val as u16,imm as u16,res); rm_loc.write_u16(res,&mut self.regs,mem)?; }
+                        else { let res=(dst_val as u32).wrapping_add(imm as u32); update_add_flags_u32(&mut self.regs.rflags,dst_val as u32,imm as u32,res); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; }
                     }
-                    1 => {
-                        // OR
-                        let res = dst_val | imm;
-                        update_logic_flags_u64(&mut self.regs.rflags, res, is_64bit);
-                        rm_loc.write_val(res, is_64bit, &mut self.regs, mem)?;
+                    1 => { let res=dst_val|imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
+                    4 => { let res=dst_val&imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
+                    5 => { // SUB
+                        if is_64bit { let res=dst_val.wrapping_sub(imm); update_sub_flags_u64(&mut self.regs.rflags,dst_val,imm,res); rm_loc.write_val(res,true,&mut self.regs,mem)?; }
+                        else if size16 { let res=(dst_val as u16).wrapping_sub(imm as u16); update_sub_flags_u16(&mut self.regs.rflags,dst_val as u16,imm as u16,res); rm_loc.write_u16(res,&mut self.regs,mem)?; }
+                        else { let res=(dst_val as u32).wrapping_sub(imm as u32); update_sub_flags_u32(&mut self.regs.rflags,dst_val as u32,imm as u32,res); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; }
                     }
-                    4 => {
-                        // AND
-                        let res = dst_val & imm;
-                        update_logic_flags_u64(&mut self.regs.rflags, res, is_64bit);
-                        rm_loc.write_val(res, is_64bit, &mut self.regs, mem)?;
+                    6 => { let res=dst_val^imm; if is_64bit { update_logic_flags_u64(&mut self.regs.rflags,res,true); rm_loc.write_val(res,true,&mut self.regs,mem)?; } else if size16 { update_logic_flags_u16(&mut self.regs.rflags,res as u16); rm_loc.write_u16(res as u16,&mut self.regs,mem)?; } else { update_logic_flags_u64(&mut self.regs.rflags,res,false); rm_loc.write_val(res as u64,false,&mut self.regs,mem)?; } }
+                    7 => { // CMP
+                        if is_64bit { let res=dst_val.wrapping_sub(imm); update_sub_flags_u64(&mut self.regs.rflags,dst_val,imm,res); }
+                        else if size16 { let res=(dst_val as u16).wrapping_sub(imm as u16); update_sub_flags_u16(&mut self.regs.rflags,dst_val as u16,imm as u16,res); }
+                        else { let res=(dst_val as u32).wrapping_sub(imm as u32); update_sub_flags_u32(&mut self.regs.rflags,dst_val as u32,imm as u32,res); }
                     }
-                    5 => {
-                        // SUB
-                        if is_64bit {
-                            let res = dst_val.wrapping_sub(imm);
-                            update_sub_flags_u64(&mut self.regs.rflags, dst_val, imm, res);
-                            rm_loc.write_val(res, true, &mut self.regs, mem)?;
-                        } else {
-                            let res = (dst_val as u32).wrapping_sub(imm as u32);
-                            update_sub_flags_u32(&mut self.regs.rflags, dst_val as u32, imm as u32, res);
-                            rm_loc.write_val(res as u64, false, &mut self.regs, mem)?;
-                        }
-                    }
-                    6 => {
-                        // XOR
-                        let res = dst_val ^ imm;
-                        update_logic_flags_u64(&mut self.regs.rflags, res, is_64bit);
-                        rm_loc.write_val(res, is_64bit, &mut self.regs, mem)?;
-                    }
-                    7 => {
-                        // CMP (No escribe el resultado en destino, solo actualiza RFLAGS)
-                        if is_64bit {
-                            let res = dst_val.wrapping_sub(imm);
-                            update_sub_flags_u64(&mut self.regs.rflags, dst_val, imm, res);
-                        } else {
-                            let res = (dst_val as u32).wrapping_sub(imm as u32);
-                            update_sub_flags_u32(&mut self.regs.rflags, dst_val as u32, imm as u32, res);
-                        }
-                    }
-                    other => return Err(format!("OperaciÃ³n grupo 0x81/0x83 /{} no soportada", other)),
+                    other => return Err(format!("Operación grupo 0x81/0x83 /{} no soportada", other)),
                 }
                 Ok(None)
             }
