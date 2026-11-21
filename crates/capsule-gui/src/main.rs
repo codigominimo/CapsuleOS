@@ -16,6 +16,7 @@
 //! - `capsule.exe test-whpx`       : Verificacion del backend de virtualizacion por hardware WHPX (M11).
 //! - `capsule.exe test-firmware [bios]`: Verificacion de firmware BIOS/stub y boot desde disco (M12.1).
 //! - `capsule.exe test-cdrom [iso]` : Verificacion de ATAPI/ISO El Torito boot (M12.2) o ISO externa experimental.
+//! - `capsule.exe test-uefi [ovmf.fd]`: Verificacion M12.3 condicionada de mapeo/reset UEFI/OVMF (no soporte completo).
 //! - (Sin argumentos)              : Abre la interfaz grafica Win32 con diagnostico y render de framebuffer en tiempo real.
 
 use capsule_boot::HDRS_MAGIC;
@@ -106,6 +107,7 @@ fn run_test_guest() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -159,6 +161,7 @@ fn run_test_boot() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -226,6 +229,7 @@ fn run_test_serial() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
 
     let mut vm = VirtualMachine::new(config)?;
@@ -384,6 +388,7 @@ fn run_ide_guest_on_disk(
 
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     vm.attach_primary_master_disk(disk)?;
@@ -655,6 +660,7 @@ fn run_test_network() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
     // Seleccionar 00:03.0, offset 0x00 (Vendor/Device)
     // Guest escribe 0x80001800 a 0xCF8 y lee 0xCFC (4 bytes) -> [ebx]
@@ -746,6 +752,7 @@ fn run_test_framebuffer() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
 
     // Guest: configura Bochs VBE 320x200x32 con LFB y escribe patron rojo en el framebuffer, luego HLT.
@@ -868,6 +875,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
     let kbd_code = [
         0xE4, 0x64, // in al, 0x64
@@ -898,6 +906,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
     let enable_mouse = [
         0xB0, 0xD4, 0xE6, 0x64, // out 64, D4
@@ -949,6 +958,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
     for dev in &mut vm3.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -996,6 +1006,7 @@ fn run_test_input() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
     for dev in &mut vm4.devices {
         if let Some(pic) = dev.as_any_mut().downcast_mut::<capsule_devices::Pic8259>() {
@@ -1082,6 +1093,7 @@ fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(1),
         backend: VmBackendKind::Whpx,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     }) {
         Ok(vm) => vm,
         Err(e) => {
@@ -1127,6 +1139,7 @@ fn run_test_whpx() -> Result<(), Box<dyn std::error::Error>> {
         memory_size: ByteSize::from_mib(1),
         backend: VmBackendKind::Whpx,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     }) {
         Ok(mut vm_io) => {
             let io_code = [
@@ -1266,6 +1279,7 @@ fn run_test_platform() -> Result<(), Box<dyn std::error::Error>> {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     })?;
     // Leer 0xCF8 (4 bytes) -> EAX debe ser 0 en estado inicial del bus PCI
     let code = [
@@ -1316,6 +1330,7 @@ fn boot_disk_image_from_path(path: &str, vm_name: &str) -> Result<VcpuExit, Box<
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = open_disk_image_for_boot(path)?;
@@ -1367,6 +1382,7 @@ fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::
         memory_size: ByteSize::from_mib(2),
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: bios_path.map(|s| s.to_string()),
+        firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
@@ -1403,6 +1419,61 @@ fn run_test_firmware(bios_path: Option<&str>) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+fn run_test_uefi(firmware_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    println!("==================================================");
+    println!("   Prueba de Firmware UEFI/OVMF (M12.3)         ");
+    println!("==================================================");
+
+    let (image, source, deterministic) = if let Some(p) = firmware_path {
+        let data = std::fs::read(p)?;
+        (data, p.to_string(), false)
+    } else {
+        let mut img = vec![0u8; 0x1_0000]; // 64 KiB deterministic ROM image
+        // Minimal x86 code at offset 0x100 (mapped at 0xF0100 when loaded at 0xF0000):
+        // mov eax,0x0EF1B007; mov ebx,0x500; mov [ebx],eax; hlt
+        let code: [u8; 13] = [0xB8, 0x07, 0xB0, 0xF1, 0x0E, 0xBB, 0x00, 0x05, 0x00, 0x00, 0x89, 0x03, 0xF4];
+        img[0x0100..0x0100 + code.len()].copy_from_slice(&code);
+        // Reset vector at 0xFFF0: jmp near rel32 to 0xF0100
+        let rel = (0xF_0100i32).wrapping_sub(0xF_FFF5i32);
+        img[0xFFF0] = 0xE9;
+        img[0xFFF1..0xFFF5].copy_from_slice(&rel.to_le_bytes());
+        (img, "deterministic-uefi-stub".to_string(), true)
+    };
+
+    let config = VmConfig {
+        name: "UefiBootTest".to_string(),
+        vcpu_count: 1,
+        memory_size: ByteSize::from_mib(2),
+        backend: VmBackendKind::Software,
+        firmware_bios_path: None,
+        firmware_uefi_path: if deterministic { None } else { Some(source.clone()) },
+    };
+    let mut vm = VirtualMachine::new(config)?;
+    let entry = vm.boot_firmware_uefi_image(&image)?;
+    println!("  [INFO] Imagen: {source} ({} bytes)", image.len());
+    println!("  [OK] Firmware UEFI/OVMF mapeado en ROM (RIP=0x{entry:X})");
+
+    let exit = vm.run_steps(5_000_000)?;
+    let exit = exit.unwrap_or(VcpuExit::Shutdown);
+    let marker = vm.memory.read_u32(capsule_core::types::GuestAddress::new(0x0500)).unwrap_or(0);
+    if deterministic {
+        assert_eq!(exit, VcpuExit::Halt, "Stub UEFI determinista debe hacer HLT");
+        assert_eq!(marker, 0x0EF1B007, "Marker UEFI incorrecto: 0x{marker:08X}");
+        println!("  [OK] Stub UEFI determinista ejecuto (marker 0x0EF1B007)");
+        println!("--------------------------------------------------");
+        println!("  UEFI/OVMF plumbing M12.3 (condicionado): OK");
+        println!("  Nota: NO es soporte OVMF/UEFI completo. Faltan MMIO, IRQ/APIC, CPU x86_64 completa, timers/dispositivos firmware.");
+    } else {
+        println!("  [INFO] Salida VM: {:?}", exit);
+        println!("  [INFO] Marker 0x0500: 0x{marker:08X}");
+        println!("--------------------------------------------------");
+        println!("  UEFI/OVMF externo: ejecucion best-effort (NO SOPORTADO sin caso reproducible validado)");
+        println!("  Bloqueadores esperados: MMIO, IRQ/APIC/IOAPIC, CPU/modos/paginacion/excepciones/MSRs, ACPI/HPET/firmware devices.");
+    }
+    println!("==================================================");
+    Ok(())
+}
+
 fn run_test_cdrom(iso_path: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     println!("==================================================");
     println!("   Prueba de CD-ROM/ISO ATAPI (Hito M12.2)      ");
@@ -1416,6 +1487,7 @@ fn run_test_cdrom(iso_path: Option<&str>) -> Result<(), Box<dyn std::error::Erro
             memory_size: ByteSize::from_mib(4),
             backend: VmBackendKind::Software,
             firmware_bios_path: None,
+            firmware_uefi_path: None,
         };
         let mut vm = VirtualMachine::new(config)?;
         vm.boot_from_cdrom_secondary_master(disk)?;
@@ -1484,6 +1556,7 @@ fn run_test_cdrom(iso_path: Option<&str>) -> Result<(), Box<dyn std::error::Erro
         memory_size: ByteSize::from_mib(4),
         backend: VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, 2048)?;
@@ -1594,6 +1667,7 @@ fn run_test_boot_disk(image_path: Option<&str>) -> Result<(), Box<dyn std::error
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config)?;
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE)?;
@@ -2528,6 +2602,15 @@ fn main() {
         return;
     }
 
+    if let Some(pos) = args.iter().position(|arg| arg == "test-uefi" || arg == "--test-uefi") {
+        let fw_path = args.get(pos + 1).filter(|a| !a.starts_with('-')).map(|s| s.as_str());
+        if let Err(e) = run_test_uefi(fw_path) {
+            eprintln!("Error en test-uefi: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let host_info = get_host_info();
     print_cli_summary(host_info);
 
@@ -2537,6 +2620,7 @@ fn main() {
         memory_size: ByteSize::from_mib(16),
         backend: VmBackendKind::Whpx,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     }) {
         Ok(vm) => vm,
         Err(e) => {

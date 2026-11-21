@@ -20,7 +20,7 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 | **M9** | **Framebuffer & Window Blit**| Adaptador gráfico VGA/Bochs VBE (puertos DISPI) con LFB en RAM guest, renderizado en tiempo real en ventana Win32 (DIB/StretchDIBits) y validación `test-framebuffer` | **Completado** |
 | **M10**| **GUI Input & PS/2** | Controlador PS/2 i8042 (0x60/0x64) con teclado/ratón, IRQ1/IRQ12 reflejadas al PIC por sondeo, inyección de eventos Win32 desde GUI y validación `test-input` | **Completado** |
 | **M11**| **WHPX Hardware Virtualization**| Backend de aceleración por hardware con Windows Hypervisor Platform (WHPX), mapeo GPA y VM-exits de E/S hacia dispositivos emulados, con fallback a software | **Completado** |
-| **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | En progreso (M12.1-M12.2 completados, scope acotado) |
+| **M12**| **Firmware BIOS & UEFI** | M12.1 BIOS ROM/stub + boot disco (software); M12.2 ISO/ATAPI/El Torito mínimo; M12.3 OVMF/UEFI condicionado a viabilidad | Completado (scope acotado/condicionado) |
 | **M13**| **Ubuntu Minimal / Server** | Arranque verificado de distribución Ubuntu Server mediante WHPX | Pendiente |
 | **M14**| **Ubuntu Desktop (GUI)** | Arranque verificado de entorno gráfico X11/Wayland de Ubuntu en ventana | Pendiente |
 | **M15**| **Capsule Bundle Format** | Especificación del contenedor monolítico: Header, Manifest, Payload comprimido | Pendiente |
@@ -95,6 +95,9 @@ Este documento detalla el plan de desarrollo paso a paso para el proyecto Capsul
 - Validacion: `cargo test --workspace`, `cargo build --release -p capsule-gui`, regresiones CLI relevantes, `test-firmware`, `test-cdrom`, `test-whpx` (SKIP seguro si host no soporta).
 - Limitaciones: ATAPI/El Torito mínimo (no-emulation x86, sin emulación floppy/hdd, sin múltiples entries, sin boot menu). Sin ISO9660 completo, sin INT 13h/extensions CD, sin DMA/UDMA, sin cambio de medio hotplug, sin integrarse con BIOS reales. ISOs de instaladores reales no soportadas.
 
-#### M12.3 - OVMF/UEFI (pendiente, condicionado)
-- Objetivo: carga UEFI/OVMF y ruta de boot reproducible. No se declarara soportado sin caso reproducible validado.
-- Bloqueadores: MMIO, IRQ/APIC/IOAPIC, CPU x86_64 mas completa (modos/paginacion/excepciones/MSRs), timers ACPI/HPET, dispositivos firmware/PCI más completos.
+#### M12.3 - OVMF/UEFI (completado como slice condicionado, NO soporte completo)
+- `VmConfig` agrega `firmware_uefi_path` (plumbing de config; sin soporte OVMF completo implícito).
+- `capsule-vmm` expone `map_firmware_rom` y `boot_firmware_uefi_image`: mapea imagen UEFI/OVMF en ROM, calcula reset entry determinista (0xFFFF0 cuando aplica) y configura estado mínimo de CPU. No implementa servicios UEFI, GOP, NVRAM, Secure Boot, ni runtime firmware.
+- CLI `capsule.exe test-uefi [ovmf.fd]`: self-test determinista con imagen ROM 64KiB (reset vector + código HLT+marker 0x0EF1B007) valida plumbing de mapeo/reset/ejecución. Imagen OVMF externa: best-effort, **no soportada** sin caso reproducible validado.
+- Validacion: `cargo test --workspace`, `cargo build --release -p capsule-gui`, regresiones CLI relevantes, `test-firmware`, `test-cdrom`, `test-uefi`, `test-whpx` (SKIP seguro si host no soporta).
+- Bloqueadores sin resolver: MMIO, IRQ/APIC/IOAPIC/entrega arquitectural, CPU x86_64 completa (long mode/paginación/excepciones/MSRs/SMM), ACPI/HPET/timers, PCI/firmware devices, GOP/framebuffer UEFI, NVRAM/varstore. **OVMF/UEFI no declarado soportado.**

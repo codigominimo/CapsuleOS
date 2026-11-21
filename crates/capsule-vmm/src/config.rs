@@ -19,8 +19,10 @@ pub struct VmConfig {
     pub memory_size: ByteSize,
     pub backend: VmBackendKind,
     /// Ruta a imagen BIOS/firmware (p.ej. SeaBIOS) para arranque por firmware (M12).
-    /// Si es `None`, se usa un BIOS stub mǟ��nimo integrado para pruebas deterministas.
+    /// Si es `None`, se usa un BIOS stub mínimo integrado para pruebas deterministas.
     pub firmware_bios_path: Option<String>,
+    /// Ruta a imagen UEFI/OVMF (M12.3, condicionado). No implica soporte completo.
+    pub firmware_uefi_path: Option<String>,
 }
 
 impl Default for VmConfig {
@@ -31,6 +33,7 @@ impl Default for VmConfig {
             memory_size: ByteSize::from_mib(128),
             backend: VmBackendKind::Software,
             firmware_bios_path: None,
+            firmware_uefi_path: None,
         }
     }
 }

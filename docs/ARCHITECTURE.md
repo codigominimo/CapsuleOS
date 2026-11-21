@@ -131,7 +131,7 @@ El espacio de trabajo se organiza en crates independientes y con responsabilidad
 * **`capsule-firmware`** (planeado como crate dedicado; M12.1/M12.2 implementados incrementalmente en `capsule-vmm`/`capsule-memory`/`capsule-devices`):
   * M12.1: mapeo ROM BIOS en GPA (`GuestMemory::map_rom`), reset vector/configuracion minima y boot desde disco IDE primario. Stub BIOS integrado determinista 64 KiB para backend software (COM1 banner + ATA PIO LBA0 -> 0x7C00 + JMP boot sector). `VmConfig.firmware_bios_path` permite cargar imagen BIOS externa (experimental/best-effort).
   * M12.2: ATAPI PIO mínimo en IDE secundario maestro (2048-byte sectors, IDENTIFY PACKET DEVICE, PACKET/READ(10), IRQ15). `boot_from_cdrom_secondary_master` parsea El Torito Boot Record Volume/catalog/default x86 no-emulation y carga imagen boot en 0x7C00 (fallback LBA0). CLI `test-cdrom` valida ISO determinista; ISO externa experimental.
-  * M12.3 (pendiente, condicionado): SeaBIOS/OVMF/UEFI completo solo con caso reproducible validado; requiere MMIO, IRQ/APIC, CPU/modos/excepciones/MSRs mas completos.
+  * M12.3 (condicionado, no soporte completo): `VmConfig.firmware_uefi_path`, `map_firmware_rom`/`boot_firmware_uefi_image` mapean ROM y configuran reset mínimo. `test-uefi` valida plumbing determinista; OVMF externo es best-effort/no soportado sin caso reproducible validado. Bloqueadores: MMIO, IRQ/APIC, CPU/modos/excepciones/MSRs, timers/ACPI, dispositivos firmware/GOP/NVRAM.
   * Tablas ACPI/firmware completo siguen pendientes.
 
 * **`capsule-boot`**:

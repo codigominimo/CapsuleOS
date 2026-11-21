@@ -150,11 +150,11 @@ El desarrollo se realiza de forma estrictamente incremental por hitos comprobado
   - VM-exits de E/S por puerto (IN/OUT) se traducen al despacho de dispositivos PIO/tick de plataforma existente, preservando el modelo actual de emulación de dispositivos.
   - `capsule-gui` intenta WHPX por defecto en la GUI/demo (con fallback y reporte de estado) y agrega `capsule.exe test-whpx` (guest mínimo HLT + IO a COM1 en WHPX, o SKIP si el host no lo soporta).
   - Limitaciones: sin MMIO, sin inyección/entrega arquitectural de IRQ (IDT/CLI/STI/IRET/APIC), contexto inicial mínimo (sin long mode/firmware/kernel real), y fidelidad/temporización dependiente del modelo de tick/sondeo actual.
-* [~] **Hito M12 - Firmware BIOS & UEFI** (en progreso):
-  - **M12.1 (completado, scope acotado)**: ROM mapeada en `GuestMemory` (writes ignoradas); `capsule-vmm` mapea BIOS y hace boot firmware desde disco IDE primario con reset minimo. BIOS stub integrado 64 KiB (software) imprime banner COM1, lee LBA0 por ATA PIO a 0x7C00 y salta al boot sector. `VmConfig.firmware_bios_path` permite BIOS externa experimental. `capsule.exe test-firmware [bios.bin]` valida el flujo.
-  - **M12.2 (completado, scope acotado)**: ATAPI PIO mínimo en IDE secundario maestro (0x170/IRQ15), lectura de sectores 2048 bytes, y ruta de boot CD-ROM desde ISO. `boot_from_cdrom_secondary_master` parsea Boot Record Volume El Torito, catálogo de arranque y entrada inicial/default no-emulation x86, carga la imagen de boot en 0x7C00 y salta con DL=0xE0. Fallback: si no hay El Torito válido, carga LBA 0. `capsule.exe test-cdrom [iso]` genera/valida un ISO El Torito determinista o carga una ISO externa (experimental).
-  - **M12.3 (pendiente, condicionado)**: OVMF/UEFI solo soportado con caso reproducible validado; bloqueadores: MMIO, IRQ/APIC, CPU/modos/excepciones/MSRs mas completos.
-  - Limitaciones: no SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/INT BIOS reales, A20, PCI BIOS, DMA, IRQ delivery en CPU. ATAPI/El Torito es mínimo (no-emulation, sin ISO9660 completo, sin BIOS INT 13h CD).
+* [x] **Hito M12 - Firmware BIOS & UEFI** (completado, scope acotado/condicionado):
+  - **M12.1**: ROM mapeada en `GuestMemory` (writes ignoradas); `capsule-vmm` mapea BIOS y hace boot firmware desde disco IDE primario con reset minimo. BIOS stub integrado 64 KiB (software) imprime banner COM1, lee LBA0 por ATA PIO a 0x7C00 y salta al boot sector. `VmConfig.firmware_bios_path` permite BIOS externa experimental. `capsule.exe test-firmware [bios.bin]`.
+  - **M12.2**: ATAPI PIO mínimo en IDE secundario maestro (0x170/IRQ15), sectores 2048, boot CD-ROM ISO. `boot_from_cdrom_secondary_master` parsea El Torito (Boot Record Volume, catalog, initial/default x86 no-emulation), carga imagen boot en 0x7C00, DL=0xE0; fallback LBA0. `capsule.exe test-cdrom [iso]`.
+  - **M12.3 (condicionado, NO soporte OVMF completo)**: `VmConfig.firmware_uefi_path`, `map_firmware_rom`/`boot_firmware_uefi_image` para mapeo ROM + reset determinista. `capsule.exe test-uefi [ovmf.fd]` valida plumbing con stub determinista; OVMF externo best-effort/no soportado sin caso reproducible validado.
+  - Limitaciones: no SeaBIOS/OVMF completo; sin modo real/segmentacion, IVT/INT BIOS, INT 13h CD, A20, PCI BIOS, DMA/UDMA, IRQ delivery arquitectural. ATAPI/El Torito mínimo. UEFI bloqueado por MMIO, IRQ/APIC/IOAPIC, CPU x86_64 completa, timers/ACPI/firmware devices.
 
 ---
 
@@ -270,6 +270,16 @@ Abre la ventana nativa de diagnóstico con la información del host y estado del
 # Opcional: cargar una ISO externa (experimental/best-effort)
 .\target\release\capsule.exe test-cdrom .\ruta\imagen.iso
 ```
+
+### Verificar UEFI/OVMF plumbing (Hito M12.3, condicionado)
+```powershell
+# Self-test determinista: ROM UEFI stub 64KiB, reset 0xFFFF0, HLT+marker
+.\target\release\capsule.exe test-uefi
+
+# Opcional: mapear imagen OVMF externa (best-effort, NO SOPORTADO sin caso reproducible validado)
+.\target\release\capsule.exe test-uefi .\ruta\OVMF.fd
+```
+Valida solo mapeo ROM/reset/ejecución mínima determinista. **No** valida OVMF completo, servicios UEFI, GOP, NVRAM, Secure Boot, ACPI, ni boot de OS reales.
 
 ### Ejecutar la batería de pruebas automatizadas
 ```powershell

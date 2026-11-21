@@ -11,6 +11,7 @@ fn test_minimal_vm_lifecycle_and_halt() {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear la VM");
@@ -45,6 +46,7 @@ fn test_vm_serial_com1_linux_earlyprintk() {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
@@ -111,6 +113,7 @@ fn test_vm_linux_direct_boot_protocol() {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
 
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
@@ -160,6 +163,7 @@ fn test_vm_ide_pio_identify_and_read() {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config).expect("Fallo al crear VM");
 
@@ -285,6 +289,7 @@ fn test_vm_ide_pio_write_flush_persistence() {
         
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
         let mut vm = VirtualMachine::new(config).expect("create vm");
         let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");
@@ -424,6 +429,7 @@ fn test_vm_boot_from_disk_sector_reads_next_sector_via_ide() {
     
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
     let mut vm = VirtualMachine::new(config).expect("create vm");
     let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw disk");
@@ -488,6 +494,7 @@ fn test_vm_ide_pio_multisector_read_write_via_guest() {
         
         backend: capsule_vmm::VmBackendKind::Software,
         firmware_bios_path: None,
+            firmware_uefi_path: None,
     };
         let mut vm = VirtualMachine::new(config).expect("create vm");
         let disk = RawDiskImage::open(&path, DEFAULT_SECTOR_SIZE).expect("open raw");

@@ -205,6 +205,12 @@ impl VirtualMachine {
     ///   final del primer MiB (base = 1 MiB - size, mín. 0xE0000). Entrada 0xFFFF0 si está dentro
     ///   del rango mapeado; en caso contrario, inicio de la imagen (experimental).
     pub fn map_bios_rom(&mut self, data: &[u8]) -> Result<u64, VmmError> {
+        self.map_firmware_rom(data, 0xE_0000)
+    }
+
+    /// Mapeo de firmware ROM genérico (M12.3: usado por ruta OVMF/UEFI condicionada).
+    /// No implica soporte UEFI completo; solo mapea bytes ROM y calcula un entry determinista.
+    pub fn map_firmware_rom(&mut self, data: &[u8], min_base: u64) -> Result<u64, VmmError> {
         if data.is_empty() {
             return Err(VmmError::InitializationFailed(
                 "Imagen BIOS vacía".to_string(),
@@ -214,7 +220,7 @@ impl VirtualMachine {
             (0xF_0000u64, 0xF_FFF0u64)
         } else {
             let size = data.len() as u64;
-            let base = 0x0010_0000u64.saturating_sub(size).max(0xE_0000);
+            let base = 0x0010_0000u64.saturating_sub(size).max(min_base.max(0xE_0000));
             (base, 0xF_FFF0u64)
         };
         let end = map_base + (data.len() as u64);
@@ -228,7 +234,7 @@ impl VirtualMachine {
         }
         self.memory
             .map_rom(GuestAddress::new(map_base), data)
-            .map_err(|e| VmmError::MemoryMappingFailed(format!("Error mapeando BIOS ROM: {e}")))?;
+            .map_err(|e| VmmError::MemoryMappingFailed(format!("Error mapeando firmware ROM: {e}")))?;
         let entry = if entry_rip >= map_base && entry_rip < end {
             entry_rip
         } else {
@@ -304,6 +310,20 @@ impl VirtualMachine {
         regs.rflags = 0x2;
         self.set_regs(&regs);
         Ok(())
+    }
+
+    /// M12.3 (condicionado): mapea imagen UEFI/OVMF en ROM y configura reset mínimo.
+    /// No declara soporte OVMF completo; útil para validación de plumbing/mapa/reset y
+    /// pruebas best-effort controladas. La ejecución real de OVMF depende de gaps conocidos
+    /// (MMIO, IRQ/APIC, CPU x86_64, timers/dispositivos firmware).
+    pub fn boot_firmware_uefi_image(&mut self, image: &[u8]) -> Result<u64, VmmError> {
+        let entry = self.map_firmware_rom(image, 0xE_0000)?;
+        let mut regs = Registers::new();
+        regs.rip = entry;
+        regs.rsp = 0x0007_FFF0;
+        regs.rflags = 0x2;
+        self.set_regs(&regs);
+        Ok(entry)
     }
 
     /// Carga un bloque de código máquina ejecutable en la memoria física del guest.
